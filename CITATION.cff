@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "GatewayDB-MCP"
+authors:
+  - family-names: "Dhanaraj"
+    given-names: "Rinu"
+    affiliation: ""
+    orcid: "https://orcid.org/0009-0007-9082-8846"  # Add if you have one
+repository-code: "https://github.com/open-gw/gateway-db-mcp"
+url: "https://github.com/open-gw/gateway-db-mcp"
+license: Apache-2.0
+date-released: "2026-05-01"
