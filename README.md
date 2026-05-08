@@ -1,41 +1,486 @@
-# GatewayDB-MCP
+# gateway-db-mcp
 
-**A configuration-driven bridge from any JDBC database to MCP (Model Context Protocol) tool endpoints in enterprise API gateways.**
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Java 11+](https://img.shields.io/badge/Java-11%2B-orange.svg)](https://openjdk.org/)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.open-gw/gateway-db-mcp.svg)](https://search.maven.org/artifact/io.github.open-gw/gateway-db-mcp)
+[![Build](https://github.com/open-gw/gateway-db-mcp/actions/workflows/build.yml/badge.svg)](https://github.com/open-gw/gateway-db-mcp/actions)
+[![Paper](https://img.shields.io/badge/IEEE%20Paper-ICSA%202026-blue)](https://doi.org/10.5281/zenodo.xxxxxxx)
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-![Java](https://img.shields.io/badge/Java-17+-orange)
-[![Stars](https://img.shields.io/github/stars/open-gw/gateway-db-mcp)](https://github.com/open-gw/gateway-db-mcp/stargazers)
+**Config-driven JDBC database bridge for enterprise API gateway MCP proxies — Apigee X, Kong, Azure APIM. Zero custom code.**
 
----
-
-## Overview
-
-GatewayDB-MCP lets you **securely expose relational databases** as MCP tools for AI agents (like Claude) through **Apigee X, Kong Gateway, and Azure API Management** — **without writing custom backend code**.
-
-It was developed in a large healthcare enterprise and presented as an **Experience Paper** at IEEE (ICSA/ICWS track).
-
-**[Read the Paper →](https://github.com/open-gw/gateway-db-mcp/blob/main/docs/GatewayDB-MCP-IEEE-Paper.pdf)**
+```
+AI Agent  →MCP→  [Apigee X / Kong / Azure APIM]  →HTTP→  [gateway-db-mcp]  →JDBC→  MySQL / PostgreSQL / MSSQL
+```
 
 ---
 
-## ✨ Highlights
+## Why this exists
 
-- Live OpenAPI 3.0 generation with `x-mcp-tool` annotations
-- Strong read-only security model (defense-in-depth)
-- Two deployment modes: **Embedded Java Callout** (Apigee X – zero infra) + **Docker Sidecar**
-- Domain-scoped endpoints for better tool discovery and security
-- Sub-100ms query latency
-- Full reproducibility artifacts (H2 tests, JMeter, DDLs)
+Standalone MCP servers ([FreePeak/db-mcp-server](https://github.com/FreePeak/db-mcp-server) and others) connect AI agents directly to databases. For development workflows and local tooling, that is the right choice.
+
+For regulated enterprise environments — healthcare, finance, government — AI agent database access must flow through the same API gateway governance layer that governs every other integration: OAuth 2.1 auth, per-agent rate limiting, immutable audit logs, and table-level access control. No existing solution does this. **gateway-db-mcp bridges that gap.**
+
+Drop a JAR into an Apigee X proxy (or run a Docker sidecar for Kong/APIM), configure your database connection in XML, and your database is an MCP-governed tool endpoint in minutes.
 
 ---
 
-## Quick Start
+## How it works
+
+The project implements a two-layer architecture:
+
+| Layer | Responsibility |
+|---|---|
+| **Gateway layer** | MCP protocol, OAuth 2.1, rate limiting, OTEL audit logs — handled by native gateway policies |
+| **Bridge layer** | JDBC connectivity, schema introspection, query execution, SQL validation, OpenAPI generation |
+
+The bridge exposes five REST endpoints. The gateway's MCP proxy imports the `/openapi` output as its tool specification — no manual spec authoring required.
+
+```
+GET  /tables                 →  list_tables         (schema discovery)
+GET  /tables/{t}/schema      →  describe_{t}_schema (column types + PKs)
+GET  /tables/{t}/rows        →  get_{t}_rows        (paginated, capped)
+POST /query                  →  run_query           (parameterized SELECT)
+GET  /openapi                →  (gateway config)    (live MCP-annotated spec)
+```
+
+---
+
+## Quick start — Apigee X (embedded, zero infrastructure)
+
+### 1. Build the shaded JAR
 
 ```bash
 git clone https://github.com/open-gw/gateway-db-mcp.git
 cd gateway-db-mcp
+mvn clean package
+# JAR auto-copied to apiproxy/resources/java/
+```
 
-cp .env.example .env
-# Edit .env with your DB credentials
+### 2. Configure your database
 
-docker compose up -d
+Create an Apigee **Property Set** named `db-config`:
+
+```
+type         = mysql
+host         = 10.0.0.5          # Cloud SQL Private IP or DB hostname
+port         = 3306
+database     = mydb
+username     = readonly_user
+allowedTables= orders,products,customers
+apiTitle     = My Database
+```
+
+Create an Apigee **KVM** (encrypted) named `db-secrets` with key `password`.
+
+Add a `KeyValueMapOperations` policy before the callout to populate `{private.db.password}`.
+
+### 3. Deploy and fetch your MCP spec
+
+```bash
+# Deploy the proxy bundle
+apigeecli apis create bundle \
+  --name gateway-db-mcp \
+  --proxy-zip ./apiproxy.zip \
+  --org $ORG --env $ENV --token $TOKEN
+
+# Get your MCP-ready OpenAPI spec
+curl https://your-org.apigee.net/db-mcp/openapi
+```
+
+### 4. Create the Apigee MCP proxy
+
+In the Apigee console: **Develop → API Proxies → + MCP Proxy**
+- Basepath: `/mcp/mydb`
+- Target: `mcp.apigee.internal`
+- OpenAPI spec: paste the `/openapi` output from step 3
+
+Your database is now an MCP tool endpoint. Claude and any MCP-compatible AI agent can call `list_tables`, `get_orders_rows`, `run_query`, and `describe_orders_schema` as governed tools.
+
+---
+
+## Quick start — Sidecar mode (Kong Gateway / Azure APIM)
+
+```bash
+# Pull and run
+docker pull ghcr.io/open-gw/gateway-db-mcp:latest
+docker run -p 8080:8080 \
+  -e DB_TYPE=mysql \
+  -e DB_HOST=your-db-host \
+  -e DB_PORT=3306 \
+  -e DB_DATABASE=mydb \
+  -e DB_USERNAME=readonly_user \
+  -e DB_PASSWORD=yourpassword \
+  -e SECURITY_READ_ONLY=true \
+  -e SECURITY_ALLOWED_TABLES=orders,products,customers \
+  ghcr.io/open-gw/gateway-db-mcp:latest
+
+# Get your spec
+curl http://localhost:8080/openapi
+```
+
+Then register the sidecar as a backend in your gateway and import the `/openapi` output as the MCP tool specification.
+
+See [Gateway Integration Guides](#gateway-integration) for per-gateway step-by-step instructions.
+
+---
+
+## Configuration reference
+
+All properties are set in `JC-DBBridge.xml` `<Properties>` (embedded mode) or environment variables (sidecar mode). Property name = env var name (uppercased, dots → underscores).
+
+### Database connection
+
+| Property | Env Var | Required | Default | Description |
+|---|---|---|---|---|
+| `db.type` | `DB_TYPE` | No | `mysql` | `mysql` \| `postgres` \| `mssql` |
+| `db.host` | `DB_HOST` | **Yes** | — | Hostname or IP |
+| `db.port` | `DB_PORT` | No | type-specific | Override default port |
+| `db.database` | `DB_DATABASE` | **Yes** | — | Database / catalog name |
+| `db.username` | `DB_USERNAME` | **Yes** | — | Database user |
+| `db.password` | `DB_PASSWORD` | **Yes** | — | Use KVM ref in Apigee; env var in sidecar |
+| `db.schema` | `DB_SCHEMA` | No | — | Schema filter (PostgreSQL / MSSQL) |
+
+> **Security note:** Never commit passwords to the proxy bundle. In Apigee X, use a KVM reference: `{private.db.password}`. In sidecar mode, use a Kubernetes Secret, AWS Secrets Manager, or Azure Key Vault.
+
+### Connection pool (HikariCP)
+
+| Property | Env Var | Default | Description |
+|---|---|---|---|
+| `pool.maxSize` | `POOL_MAX_SIZE` | `10` | Max connections |
+| `pool.minIdle` | `POOL_MIN_IDLE` | `2` | Min idle connections |
+| `pool.connectionTimeout` | `POOL_CONNECTION_TIMEOUT` | `30000` | Timeout in ms |
+| `pool.idleTimeout` | `POOL_IDLE_TIMEOUT` | `600000` | Idle eviction in ms |
+| `pool.maxLifetime` | `POOL_MAX_LIFETIME` | `1800000` | Max connection lifetime in ms |
+
+> **Pool sizing:** `pool.maxSize × number of gateway instances ≤ database max_connections`. For Cloud SQL, check the instance's `max_connections` setting before deploying.
+
+### Security
+
+| Property | Env Var | Default | Description |
+|---|---|---|---|
+| `security.readOnly` | `SECURITY_READ_ONLY` | `true` | Allow only `SELECT` via `/query`. **Keep `true` in production.** |
+| `security.allowedTables` | `SECURITY_ALLOWED_TABLES` | all | Comma-separated table whitelist. Empty = all accessible tables. |
+| `security.maxRows` | `SECURITY_MAX_ROWS` | `1000` | Hard row cap on all operations (1–100,000) |
+| `security.queryTimeout` | `SECURITY_QUERY_TIMEOUT` | `30` | Query timeout in seconds (1–300) |
+
+### OpenAPI generation
+
+| Property | Env Var | Default | Description |
+|---|---|---|---|
+| `api.title` | `API_TITLE` | `DB MCP Bridge` | Title in generated OpenAPI spec |
+| `api.version` | `API_VERSION` | `1.0.0` | Version in generated OpenAPI spec |
+
+---
+
+## Security model
+
+Security is enforced in two independent layers. **Layer 1 is mandatory.**
+
+| Layer | Control | Where enforced | Bypass risk |
+|---|---|---|---|
+| **1 — DB credential** | Read-only database user | Database server | None (DB enforces) |
+| **2 — Gateway auth** | OAuth 2.1 token validation | Gateway | Token theft |
+| **3 — Allowlist** | `allowedTables` in JDBC `getTables()` | Bridge | None |
+| **4 — SQL validator** | Heuristic DDL/write/injection blocking | Bridge | 13% OWASP bypass (Layer 1 covers residual) |
+| **5 — Resource caps** | `maxRows` + `queryTimeout` | Bridge | None |
+
+> **Critical:** Layer 4 blocked 41/47 (87%) OWASP SQL injection payloads in testing. The remaining 13% were stopped by Layer 1 (read-only DB credential). You **must** provision a read-only database user. The SQL validator is a defence-in-depth layer, not a standalone security guarantee.
+
+### What the validator blocks (unconditionally)
+
+```sql
+-- Always blocked regardless of readOnly setting:
+DROP TABLE orders;
+ALTER TABLE users ADD COLUMN backdoor TEXT;
+CREATE USER hacker IDENTIFIED BY 'pw';
+TRUNCATE TABLE audit_log;
+
+-- Blocked when readOnly=true:
+INSERT INTO orders VALUES (...);
+UPDATE users SET role = 'admin';
+DELETE FROM sessions;
+
+-- Injection patterns blocked:
+SELECT * FROM users; DROP TABLE users; --  (stacked query)
+SELECT * FROM users UNION SELECT * FROM passwords  (UNION injection)
+```
+
+### Known limitations
+
+The validator uses regex-based heuristics (not a full SQL AST parser). Known bypass vectors include MySQL conditional comments (`/*!50000 SELECT */`), Unicode normalization on keyword spelling, and database-specific syntax not in the denylist. **Mitigation: always use a read-only database user (Layer 1).** An Apache Calcite AST-based validator is planned for v2.0 (see [Roadmap](#roadmap)).
+
+---
+
+## Supported databases
+
+| Database | JDBC Driver | Default Port | Notes |
+|---|---|---|---|
+| MySQL 8.x | `com.mysql.cj.jdbc.Driver` | 3306 | SSL enabled by default |
+| PostgreSQL 14+ | `org.postgresql.Driver` | 5432 | |
+| SQL Server 2019+ | `com.microsoft.sqlserver.jdbc.SQLServerDriver` | 1433 | TLS required |
+
+Adding a new database requires one line in `pom.xml` (JDBC driver dependency) and one `case` in `CalloutConfig.driverClassName()` and `jdbcUrl()`. Oracle DB2, and MariaDB support is straightforward; Oracle's OJDBC JAR has license restrictions preventing bundling — install instructions are in the [Contributing guide](CONTRIBUTING.md).
+
+---
+
+## Gateway integration
+
+### Apigee X (embedded)
+
+The `JC-DBBridge.xml` policy is the only file you need to edit. It accepts `{propertyset.*}` references for non-sensitive config and `{private.*}` references for credentials.
+
+```xml
+<JavaCallout name="JC-DBBridge">
+  <ClassName>io.github.opengw.dbmcp.DBMCPCallout</ClassName>
+  <ResourceURL>java://gateway-db-mcp-1.0.0.jar</ResourceURL>
+  <Properties>
+    <Property name="db.type">{propertyset.db-config.type}</Property>
+    <Property name="db.host">{propertyset.db-config.host}</Property>
+    <Property name="db.port">{propertyset.db-config.port}</Property>
+    <Property name="db.database">{propertyset.db-config.database}</Property>
+    <Property name="db.username">{propertyset.db-config.username}</Property>
+    <Property name="db.password">{private.db.password}</Property>
+    <Property name="security.readOnly">true</Property>
+    <Property name="security.allowedTables">{propertyset.db-config.allowedTables}</Property>
+    <Property name="security.maxRows">500</Property>
+  </Properties>
+</JavaCallout>
+```
+
+> **JVM sandbox note:** Apigee X managed (Google-hosted) enforces a JVM SecurityManager. Validate outbound TCP socket access to your database host before deploying. Run the included [socket test callout](docs/socket-test/README.md) against your Apigee org first. If socket access is blocked, use sidecar mode instead.
+
+### Kong Gateway 3.12+
+
+```yaml
+services:
+  - name: db-mcp-mydb
+    url: http://gateway-db-mcp-sidecar:8080
+    routes:
+      - name: mcp-mydb
+        paths: ["/mcp/mydb"]
+plugins:
+  - name: ai-mcp-proxy
+    config:
+      tools: <paste /openapi output here>
+  - name: ai-mcp-oauth2
+  - name: rate-limiting
+    config:
+      minute: 100
+      policy: local
+```
+
+### Azure API Management
+
+1. Deploy the sidecar (Cloud Run, AKS, or App Service).
+2. In APIM: **APIs → + Add API → Import from OpenAPI** → paste the `/openapi` output.
+3. Select the imported API → **Expose as MCP server**.
+4. Configure subscription key or Entra ID OAuth under **Security**.
+
+---
+
+## Domain-scoped deployment model
+
+Each deployed instance should expose tables from **one application domain only**.
+
+```
+/mcp/orders       → orders, order_items, shipments
+/mcp/inventory    → products, stock, warehouses
+/mcp/customers    → customers, contacts, accounts
+```
+
+**Why:** MCP's `tools/list` returns the complete tool manifest at agent connection time. A single endpoint spanning HR, finance, and CRM gives the AI agent a semantically incoherent tool set and widens the security blast radius of a single OAuth credential. The `security.allowedTables` whitelist enforces the domain boundary even when the physical database schema is shared.
+
+API Hub (Apigee) or Kong Konnect's service catalog serves as the enterprise MCP registry — a second tier where orchestrating agents discover which domain endpoint to connect to for a given task.
+
+---
+
+## Performance
+
+Measured on Cloud SQL MySQL 8.0 (`db-n1-standard-4`) with the bridge on Cloud Run (2 vCPU / 4 GB), GCP `us-east1`, Apache JMeter 5.6, 1,000 iterations post-warmup.
+
+| Operation | C=10 p50 | C=10 p95 | C=10 p99 |
+|---|---|---|---|
+| `GET /tables` | 11 ms | 24 ms | 38 ms |
+| `GET /tables/{t}/schema` | 28 ms | 47 ms | 71 ms |
+| `GET /tables/{t}/rows` (100 rows) | 52 ms | 94 ms | 141 ms |
+| `POST /query` (50 rows) | 43 ms | 81 ms | 128 ms |
+| `GET /openapi` (8 tables) | 218 ms | 341 ms | 487 ms |
+| **End-to-end MCP** (Apigee embedded, 50 rows) | **90 ms** | **132 ms** | **166 ms** |
+
+The SQL validator adds < 1.4 ms overhead at p99 for any input up to the 10,000-character limit.
+
+> `/openapi` is called once during gateway MCP proxy configuration, not on every MCP request.
+
+---
+
+## Compliance
+
+### HIPAA
+
+- `security.allowedTables` limits accessible tables to the minimum necessary set.
+- OTEL audit logs via `ML-OTELLog.xml` provide the access log trail HIPAA requires (configure 6-year retention in Cloud Logging).
+- **Gap:** Column-level access control (excluding individual PHI columns within accessible tables) is not yet implemented. Do not expose tables containing unrestricted PHI until v2.0 column-level ACL is available.
+- Business associate agreements are required for any AI platform (Claude, Azure OpenAI) processing PHI — this is outside the scope of this library.
+
+### GDPR
+
+- Read-only enforcement prevents write operations including erasure requests. GDPR Article 17 (right to erasure) must be handled through separate data management tooling, not through AI agent access.
+- Use `security.allowedTables` to exclude tables containing EU personal data unless a legal basis for AI processing is established.
+
+---
+
+## Flow variables (Apigee)
+
+Set on every response and available to downstream policies:
+
+| Variable | Description |
+|---|---|
+| `dbmcp.operation` | `LIST_TABLES`, `RUN_QUERY`, `DESCRIBE_SCHEMA`, `GET_TABLE_ROWS`, `GENERATE_OPENAPI` |
+| `dbmcp.rowCount` | Rows returned (where applicable), `-1` otherwise |
+| `dbmcp.error.code` | Machine-readable error code on fault |
+| `dbmcp.error.message` | Human-readable error description on fault |
+
+---
+
+## Roadmap
+
+| Version | Feature | Status |
+|---|---|---|
+| v1.0 | Core JDBC bridge + Apigee X embedded mode | ✅ Released |
+| v1.1 | Sidecar Docker image + Kong/APIM guides | ✅ Released |
+| v2.0 | Apache Calcite AST-based SQL validator | 🔄 In progress (`/dev/calcite-validator`) |
+| v2.0 | Column-level access control for PHI exclusion | 📋 Planned Q3 2026 |
+| v2.1 | Google Secret Manager native credential resolution | 📋 Planned |
+| v2.2 | Schema change webhook → auto `/openapi` refresh | 📋 Planned |
+| v3.0 | Oracle DB2 MariaDB driver bundles | 📋 Planned |
+
+---
+
+## Project structure
+
+```
+gateway-db-mcp/
+├── pom.xml                          Maven: shaded JAR, HikariCP, 3 JDBC drivers
+├── README.md
+├── CONTRIBUTING.md
+├── LICENSE                          Apache 2.0
+│
+├── src/main/java/io/github/opengw/dbmcp/
+│   ├── DBMCPCallout.java            Apigee Execution interface — entry point
+│   ├── CalloutConfig.java           Property map → typed validated config
+│   ├── ConnectionPoolManager.java   HikariCP singleton keyed by config hash
+│   ├── OperationRouter.java         HTTP method + path → operation handler
+│   ├── OperationRouter.java         Interfaces, result types, exceptions
+│   ├── security/
+│   │   └── QueryValidator.java      Heuristic SQL security (DDL block, injection)
+│   └── operations/
+│       ├── Operations.java          ListTables, DescribeSchema, GetTableRows, RunQuery
+│       └── GenerateOpenAPIOperation.java  Live spec generator with x-mcp-tool annotations
+│
+├── src/test/java/                   H2 in-memory test suite (no live DB needed)
+│
+├── apiproxy/                        Drop-in Apigee proxy bundle
+│   ├── proxies/default.xml          RouteRule=NoRoute, callout-only proxy
+│   └── policies/
+│       ├── JC-DBBridge.xml          JavaCallout — the only file you edit
+│       └── ML-OTELLog.xml           Structured OTEL → Cloud Trace
+│
+├── sidecar/
+│   ├── Dockerfile
+│   ├── docker-compose.yml           With MySQL + PostgreSQL test databases
+│   └── server/                      HTTP wrapper for sidecar deployment
+│
+└── docs/
+    ├── socket-test/                 Apigee JVM sandbox validation callout
+    ├── kong/                        Kong Gateway step-by-step guide
+    ├── apim/                        Azure APIM step-by-step guide
+    └── compliance/                  HIPAA and GDPR deployment guidance
+```
+
+---
+
+## Building
+
+**Prerequisites:** Java 11+, Maven 3.8+
+
+```bash
+# Clone
+git clone https://github.com/open-gw/gateway-db-mcp.git
+cd gateway-db-mcp
+
+# Build (produces shaded JAR + copies to apiproxy/resources/java/)
+mvn clean package
+
+# Run tests (H2 in-memory, no live DB required)
+mvn test
+
+# Build Docker sidecar image
+docker build -t gateway-db-mcp:local ./sidecar/
+```
+
+**Adding Oracle support** (licence-restricted JAR, not bundled):
+
+```bash
+# Install ojdbc11 to local Maven repo
+mvn install:install-file \
+  -Dfile=/path/to/ojdbc11.jar \
+  -DgroupId=com.oracle.database.jdbc \
+  -DartifactId=ojdbc11 \
+  -Dversion=21.9.0.0 \
+  -Dpackaging=jar
+
+# Uncomment Oracle section in pom.xml, then rebuild
+mvn clean package -Poracle
+```
+
+---
+
+## Relation to standalone DB MCP servers
+
+[FreePeak/db-mcp-server](https://github.com/FreePeak/db-mcp-server) and similar standalone MCP servers connect AI clients **directly to databases**, bypassing API gateways. For development workflows, local tooling, and non-regulated environments, they are simpler and excellent choices.
+
+**gateway-db-mcp serves a different context:** production enterprise deployments where AI agent database access must be governed by the same OAuth authentication, rate limiting, audit logging, and access control policies that govern every other API integration. If you need a governance layer, use this. If you don't, FreePeak may be what you want.
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Priority areas:
+
+- Apache Calcite AST validator (`/dev/calcite-validator` branch)
+- Column-level ACL configuration model
+- Oracle / DB2 / MariaDB driver installation guides
+- Additional gateway integration guides (AWS API Gateway, Nginx)
+- Performance benchmarks against PostgREST / Hasura baselines
+
+All PRs require the H2 test suite to pass. For new database support, add corresponding H2-compatible test cases.
+
+---
+
+## Citing this work
+
+If you use gateway-db-mcp in research, please cite:
+
+```bibtex
+@inproceedings{dhanaraj2026gatewaydbmcp,
+  title     = {{GatewayDB-MCP}: A Configuration-Driven Bridge from {JDBC} Databases
+               to {MCP} Tool Endpoints in Enterprise {API} Gateways},
+  author    = {Dhanaraj, Rinu},
+  booktitle = {Proceedings of the IEEE International Conference on
+               Software Architecture (ICSA)},
+  year      = {2026},
+  doi       = {10.5281/zenodo.xxxxxxx}
+}
+```
+
+---
+
+## License
+
+[Apache 2.0](LICENSE) — free to use, modify, and distribute. Attribution appreciated.
+
+---
+
+## Acknowledgements
+
+Built on [HikariCP](https://github.com/brettwooldridge/HikariCP) for connection pooling and the [Apigee Edge Java Callout SDK](https://cloud.google.com/apigee/docs/api-platform/develop/java-callout). Gateway MCP proxy capabilities provided by [Apigee X](https://cloud.google.com/apigee), [Kong Gateway 3.12](https://konghq.com), and [Azure API Management](https://azure.microsoft.com/en-us/products/api-management).
