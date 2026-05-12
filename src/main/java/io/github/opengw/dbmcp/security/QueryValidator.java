@@ -12,7 +12,8 @@ import java.util.regex.Pattern;
  *
  * <p>Known bypass vectors (mitigated by Layer 1):
  * <ul>
- *   <li>MySQL conditional comments: {@code /*!50000 SELECT */}</li>
+ *   <li>MySQL conditional comments: {@literal /*!50000 SELECT *}{@literal /} — not stripped
+ *       by standard block comment removal</li>
  *   <li>Unicode normalization on keyword spelling</li>
  *   <li>Database-specific syntax not in denylist (HANDLER, COPY TO, OPENROWSET)</li>
  * </ul>
