@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Install Apigee mock JARs
+        # These are provided-scope JARs not on Maven Central.
+        # We install minimal stubs for CI compilation.
+        run: |
+          mkdir -p $HOME/.m2/repository/com/apigee/edge/expressions/1.0.0
+          mkdir -p $HOME/.m2/repository/com/apigee/edge/message-flow/1.0.0
+          # Create minimal stub JARs (empty — just need to satisfy compilation)
+          echo "PK" > /tmp/stub.jar
+          cp /tmp/stub.jar $HOME/.m2/repository/com/apigee/edge/expressions/1.0.0/expressions-1.0.0.jar
+          cp /tmp/stub.jar $HOME/.m2/repository/com/apigee/edge/message-flow/1.0.0/message-flow-1.0.0.jar
+          # Install with minimal POM
+          mvn install:install-file -q \
+            -Dfile=$HOME/.m2/repository/com/apigee/edge/expressions/1.0.0/expressions-1.0.0.jar \
+            -DgroupId=com.apigee.edge -DartifactId=expressions \
+            -Dversion=1.0.0 -Dpackaging=jar
+          mvn install:install-file -q \
+            -Dfile=$HOME/.m2/repository/com/apigee/edge/message-flow/1.0.0/message-flow-1.0.0.jar \
+            -DgroupId=com.apigee.edge -DartifactId=message-flow \
+            -Dversion=1.0.0 -Dpackaging=jar
+
+      - name: Build (skip tests for compilation check)
+        run: mvn compile -q
+
+      - name: Run unit tests
+        run: mvn test -pl . --no-transfer-progress
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: target/surefire-reports/
+
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          cache: maven
+      - name: Package shaded JAR
+        run: mvn package -DskipTests -q
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-db-mcp-jar
+          path: target/gateway-db-mcp-*.jar

@@ -1,0 +1,49 @@
+# OWASP SQL Injection Prevention Cheat Sheet — Test Payloads
+# Used by OWASPValidatorTest to verify QueryValidator interception rate
+# Format: one payload per line; lines starting with # are comments
+
+' OR '1'='1
+' OR '1'='1' --
+' OR '1'='1' /*
+admin' --
+admin' #
+admin'/*
+' OR 1=1--
+' OR 1=1#
+' OR 1=1/*
+') OR '1'='1--
+') OR ('1'='1
+1' ORDER BY 1--
+1' ORDER BY 2--
+1' ORDER BY 3--
+1' GROUP BY 1,2,--
+1' GROUP BY 1,2,3--
+-1' UNION SELECT 1,2,3--
+-1 UNION SELECT 1,2,3--
+SELECT * FROM users WHERE id=1 UNION SELECT 1,2,3
+' UNION SELECT NULL--
+' UNION SELECT NULL,NULL--
+' UNION SELECT NULL,NULL,NULL--
+SELECT 1; DROP TABLE users; --
+SELECT 1; DELETE FROM orders; --
+INSERT INTO users VALUES ('hacker','pw')
+UPDATE users SET role='admin' WHERE 1=1
+DELETE FROM sessions WHERE 1=1
+DROP TABLE orders
+ALTER TABLE users ADD COLUMN backdoor TEXT
+CREATE TABLE evil (id INT)
+TRUNCATE TABLE audit_log
+GRANT ALL ON *.* TO 'h'@'%'
+EXEC xp_cmdshell('dir')
+EXECUTE sp_executesql N'SELECT 1'
+' AND 1=CONVERT(int,(SELECT TOP 1 table_name FROM information_schema.tables))--
+' AND (SELECT SUBSTRING(username,1,1) FROM users WHERE username='admin')='a
+1 WAITFOR DELAY '0:0:5'--
+'; WAITFOR DELAY '0:0:5'--
+1; SELECT SLEEP(5)--
+' OR SLEEP(5)--
+' AND SLEEP(5)--
+1 AND 1=1
+1 AND 1=2
+1' AND '1'='1
+1' AND '1'='2
