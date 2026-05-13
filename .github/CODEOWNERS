@@ -1,0 +1,19 @@
+# CODEOWNERS
+# Automatically requested for review on every PR.
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything
+*                                                @rinu-dhanaraj
+
+# Security-sensitive files — always require maintainer review
+src/main/java/io/github/opengw/dbmcp/security/  @rinu-dhanaraj
+SECURITY.md                                      @rinu-dhanaraj
+
+# Core callout and config
+src/main/java/io/github/opengw/dbmcp/DBMCPCallout.java       @rinu-dhanaraj
+src/main/java/io/github/opengw/dbmcp/CalloutConfig.java       @rinu-dhanaraj
+src/main/java/io/github/opengw/dbmcp/ConnectionPoolManager.java @rinu-dhanaraj
+
+# CI and build
+.github/                                         @rinu-dhanaraj
+pom.xml                                          @rinu-dhanaraj
