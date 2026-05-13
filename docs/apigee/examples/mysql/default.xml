@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  default.xml — Proxy Endpoint (MySQL example)
+  ═══════════════════════════════════════════════════════════════════════════════
+  Copy this to apiproxy/proxies/default.xml in your proxy bundle.
+
+  Policy execution order (PreFlow request):
+    1. KVM-GetDBPassword   — loads DB password into private.db.password
+    2. VA-VerifyToken      — validates OAuth 2.0 access token (add your own)
+    3. SA-RateLimit        — per-agent rate limiting     (add your own)
+    4. JC-DBBridge         — executes the DB operation, writes response
+
+  RouteRule is NoRoute — the callout owns the response entirely.
+  No backend service or target endpoint is needed.
+  ═══════════════════════════════════════════════════════════════════════════════
+-->
+<ProxyEndpoint name="default">
+  <Description>gateway-db-mcp Bridge — MySQL</Description>
+
+  <HTTPProxyConnection>
+    <!-- Change this basepath to match your domain.
+         Use /db-mcp/{domain} convention for multi-domain deployments.
+         Examples: /db-mcp/orders, /db-mcp/inventory, /db-mcp/finance -->
+    <BasePath>/db-mcp</BasePath>
+    <VirtualHost>secure</VirtualHost>
+  </HTTPProxyConnection>
+
+  <PreFlow name="PreFlow">
+    <Request>
+
+      <!-- Step 1: Load DB password from encrypted KVM.
+           MUST be first — JC-DBBridge reads {private.db.password}. -->
+      <Step><Name>KVM-GetDBPassword</Name></Step>
+
+      <!-- Step 2: Verify OAuth 2.0 access token.
+           Add your OAuthV2 policy here. Example:
+      <Step><Name>VA-VerifyToken</Name></Step>
+      -->
+
+      <!-- Step 3: Rate limit per agent identity.
+           Add your SpikeArrest policy here. Example:
+      <Step><Name>SA-AgentRateLimit</Name></Step>
+      -->
+
+    </Request>
+    <Response/>
+  </PreFlow>
+
+  <Flows>
+    <Flow name="bridge-operations">
+      <Request>
+        <!-- Step 4: Execute DB operation. Writes response to message context. -->
+        <Step><Name>JC-DBBridge</Name></Step>
+      </Request>
+      <Response>
+        <!-- Step 5: Emit OTEL structured log for every operation. -->
+        <Step><Name>ML-OTELLog</Name></Step>
+      </Response>
+      <Condition>proxy.pathsuffix MatchesPath "/**"</Condition>
+    </Flow>
+  </Flows>
+
+  <PostFlow name="PostFlow">
+    <Request/>
+    <Response/>
+  </PostFlow>
+
+  <!-- No backend — callout handles the full response lifecycle -->
+  <RouteRule name="NoRoute"/>
+
+</ProxyEndpoint>

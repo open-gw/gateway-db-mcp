@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  JC-DBBridge-MySQL.xml
+  ═══════════════════════════════════════════════════════════════════════════════
+  gateway-db-mcp — MySQL 8.x configuration example
+  https://github.com/open-gw/gateway-db-mcp
+
+  QUICK START
+  ───────────────────────────────────────────────────────────────────────────────
+  1. Copy this file to your apiproxy/policies/ directory as JC-DBBridge.xml
+  2. Create an Apigee Property Set named "db-config-mysql" with the keys
+     listed in the PROPERTY SET section below.
+  3. Create an Apigee KVM named "db-secrets" (encrypted = true) with key
+     "password" containing your database password.
+  4. Add KVM-GetDBPassword.xml to your proxy PreFlow BEFORE this callout.
+  5. Ensure the shaded JAR is in apiproxy/resources/java/.
+  6. Deploy and call GET /db-mcp/openapi to get your MCP proxy spec.
+
+  PROPERTY SET: db-config-mysql
+  ───────────────────────────────────────────────────────────────────────────────
+  Create in Apigee Console → Admin → Environments → [env] → Property Sets
+
+  type           = mysql
+  host           = 10.20.30.40          ← Cloud SQL Private IP (recommended)
+                                           or your MySQL hostname
+  port           = 3306
+  database       = your_database_name
+  username       = gateway_readonly      ← READ-ONLY user — see note below
+  allowedTables  = orders,products,customers  ← comma-separated; empty = all
+  apiTitle       = Your Domain Name      ← appears in generated OpenAPI spec
+
+  READ-ONLY USER — CREATE BEFORE DEPLOYING:
+  ───────────────────────────────────────────────────────────────────────────────
+  CREATE USER 'gateway_readonly'@'%' IDENTIFIED BY 'strong_password';
+  GRANT SELECT ON your_database.orders   TO 'gateway_readonly'@'%';
+  GRANT SELECT ON your_database.products TO 'gateway_readonly'@'%';
+  FLUSH PRIVILEGES;
+
+  CLOUD SQL NOTES:
+  ───────────────────────────────────────────────────────────────────────────────
+  - Use Private IP (not public IP) for lowest latency and no egress charges.
+  - Enable Private IP: Cloud SQL console → your instance → Connections → Private IP.
+  - VPC peering between Apigee X and Cloud SQL VPC must be configured.
+  - Set useSSL=true in the JDBC URL (already set below).
+  - For Cloud SQL Auth Proxy: set db.host=127.0.0.1 and run proxy as sidecar.
+
+  MYSQL-SPECIFIC BEHAVIOURS:
+  ───────────────────────────────────────────────────────────────────────────────
+  - TINYINT(1) columns: MySQL uses TINYINT(1) as a boolean convention.
+    gateway-db-mcp maps it as "integer" (JDBC standard). If your schema uses
+    TINYINT(1) for boolean flags, AI agents will see values 0/1, not true/false.
+    This is documented in the OpenAPI spec as a known limitation.
+  - JSON columns: MySQL JSON type maps to string in the OpenAPI schema.
+    The full JSON structure is not reflected in the generated spec.
+  - DATETIME vs TIMESTAMP: both map to string/date-time in JSON Schema.
+    TIMESTAMP is timezone-aware; DATETIME is not. Inform agents accordingly
+    via table-level comments (set via COMMENT on table).
+  ═══════════════════════════════════════════════════════════════════════════════
+-->
+<JavaCallout name="JC-DBBridge">
+  <DisplayName>DB MCP Bridge — MySQL</DisplayName>
+  <ClassName>io.github.opengw.dbmcp.DBMCPCallout</ClassName>
+  <ResourceURL>java://gateway-db-mcp-1.0.0.jar</ResourceURL>
+
+  <Properties>
+
+    <!-- ── DATABASE CONNECTION ──────────────────────────────────────────── -->
+
+    <!-- Database type: mysql | postgres | mssql -->
+    <Property name="db.type">{propertyset.db-config-mysql.type}</Property>
+
+    <!--
+      db.host: Cloud SQL Private IP is strongly recommended.
+      Example: 10.20.30.40
+      Do NOT use a public IP — use Private IP + VPC peering for security
+      and to avoid Cloud SQL Auth Proxy in embedded mode.
+    -->
+    <Property name="db.host">{propertyset.db-config-mysql.host}</Property>
+
+    <!-- MySQL default port is 3306. Change only if you run on a non-standard port. -->
+    <Property name="db.port">3306</Property>
+
+    <!-- Database / catalog name -->
+    <Property name="db.database">{propertyset.db-config-mysql.database}</Property>
+
+    <!-- Read-only database user (see CREATE USER above) -->
+    <Property name="db.username">{propertyset.db-config-mysql.username}</Property>
+
+    <!--
+      db.password: NEVER hardcode this.
+      This references the flow variable populated by KVM-GetDBPassword.xml.
+      The actual value comes from the encrypted Apigee KVM at runtime.
+    -->
+    <Property name="db.password">{private.db.password}</Property>
+
+    <!--
+      db.schema: Not required for MySQL.
+      MySQL uses database/catalog for namespace — the db.database property
+      already scopes to the right catalog. Leave blank for MySQL.
+    -->
+    <!-- <Property name="db.schema"></Property> -->
+
+    <!-- ── CONNECTION POOL (HikariCP) ───────────────────────────────────── -->
+
+    <!--
+      pool.maxSize: Maximum connections per Apigee instance.
+      CRITICAL: Total connections = pool.maxSize × number_of_Apigee_instances
+      Check your Cloud SQL max_connections before increasing this value.
+
+      Cloud SQL instance max_connections by tier:
+        db-f1-micro:       25
+        db-g1-small:       100
+        db-n1-standard-1:  200
+        db-n1-standard-2:  400
+        db-n1-standard-4:  1000   ← safe with pool.maxSize=10 for ~100 instances
+
+      Formula: pool.maxSize = floor(max_connections / number_of_instances) - 5
+      The -5 gives headroom for admin connections and monitoring.
+    -->
+    <Property name="pool.maxSize">10</Property>
+
+    <!-- Minimum idle connections kept alive between requests -->
+    <Property name="pool.minIdle">2</Property>
+
+    <!-- Maximum wait for a connection from pool before 503 (milliseconds) -->
+    <Property name="pool.connectionTimeout">30000</Property>
+
+    <!-- Connection idle time before eviction (milliseconds) — 10 minutes -->
+    <Property name="pool.idleTimeout">600000</Property>
+
+    <!-- Maximum connection lifetime (milliseconds) — 30 minutes.
+         Set below MySQL's wait_timeout (default 8 hours) to avoid
+         "Communications link failure" errors on stale connections. -->
+    <Property name="pool.maxLifetime">1800000</Property>
+
+    <!-- ── SECURITY ──────────────────────────────────────────────────────── -->
+
+    <!--
+      security.readOnly: true (STRONGLY RECOMMENDED for production).
+      When true, only SELECT statements are permitted via POST /query.
+      DDL (DROP, ALTER, CREATE) is always blocked regardless of this setting.
+
+      The read-only DATABASE USER is the primary write-prevention control.
+      This flag is defence-in-depth — do not rely on it alone.
+    -->
+    <Property name="security.readOnly">true</Property>
+
+    <!--
+      security.allowedTables: Comma-separated list of table names the AI
+      agent is permitted to see and query.
+
+      Tables NOT in this list:
+        - Do not appear in GET /tables response
+        - Are excluded from the generated OpenAPI spec
+        - Return HTTP 403 TABLE_NOT_ALLOWED if directly requested
+
+      Leave empty to allow all tables visible to db.username.
+      For production: ALWAYS specify an explicit allowlist.
+
+      Example: orders,order_items,products,customers,product_categories
+    -->
+    <Property name="security.allowedTables">{propertyset.db-config-mysql.allowedTables}</Property>
+
+    <!--
+      security.maxRows: Hard cap on rows returned by any single operation.
+      Prevents accidental full-table dumps by AI agents.
+
+      Tune based on:
+        - Typical response size (10KB per 100 rows is a rough estimate)
+        - Apigee response size limits (32MB default)
+        - AI agent context window (large result sets waste token budget)
+
+      Recommended: 500–2000 for most use cases.
+    -->
+    <Property name="security.maxRows">1000</Property>
+
+    <!--
+      security.queryTimeout: Seconds before a running query is aborted.
+      Prevents slow queries from holding pool connections.
+
+      Set based on your slowest expected query. For indexed tables: 10–30s.
+      For analytics queries on large unindexed tables: up to 120s.
+      Maximum allowed value: 300.
+    -->
+    <Property name="security.queryTimeout">30</Property>
+
+    <!-- ── OPENAPI GENERATION ─────────────────────────────────────────────── -->
+
+    <!--
+      api.title: Appears in the generated OpenAPI spec info.title field.
+      The MCP proxy displays this to AI clients.
+      Use a domain-meaningful name: "Orders Domain", "Inventory Service", etc.
+    -->
+    <Property name="api.title">{propertyset.db-config-mysql.apiTitle}</Property>
+
+    <!-- Semantic version of this bridge deployment -->
+    <Property name="api.version">1.0.0</Property>
+
+  </Properties>
+</JavaCallout>

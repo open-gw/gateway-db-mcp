@@ -1,0 +1,229 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  JC-DBBridge-Postgres.xml
+  ═══════════════════════════════════════════════════════════════════════════════
+  gateway-db-mcp — PostgreSQL 14+ configuration example
+  https://github.com/open-gw/gateway-db-mcp
+
+  QUICK START
+  ───────────────────────────────────────────────────────────────────────────────
+  1. Copy this file to your apiproxy/policies/ directory as JC-DBBridge.xml
+  2. Create an Apigee Property Set named "db-config-postgres" with the keys
+     listed in the PROPERTY SET section below.
+  3. Create an Apigee KVM named "db-secrets" (encrypted = true) with key
+     "password" containing your database password.
+  4. Add KVM-GetDBPassword.xml to your proxy PreFlow BEFORE this callout.
+  5. Ensure the shaded JAR is in apiproxy/resources/java/.
+  6. Deploy and call GET /db-mcp/openapi to get your MCP proxy spec.
+
+  PROPERTY SET: db-config-postgres
+  ───────────────────────────────────────────────────────────────────────────────
+  Create in Apigee Console → Admin → Environments → [env] → Property Sets
+
+  type           = postgres
+  host           = 10.20.30.40          ← Cloud SQL Private IP (recommended)
+  port           = 5432
+  database       = your_database_name
+  schema         = public               ← PostgreSQL schema name (optional)
+                                           Use "reporting" or "analytics" to
+                                           scope to a specific schema
+  username       = gateway_readonly      ← READ-ONLY user — see note below
+  allowedTables  = orders,products,customers
+  apiTitle       = Your Domain Name
+
+  READ-ONLY USER — CREATE BEFORE DEPLOYING:
+  ───────────────────────────────────────────────────────────────────────────────
+  -- Connect to your database first: \c your_database
+
+  CREATE USER gateway_readonly WITH PASSWORD 'strong_password';
+  GRANT CONNECT ON DATABASE your_database TO gateway_readonly;
+  GRANT USAGE ON SCHEMA public TO gateway_readonly;
+
+  -- Grant on specific tables (recommended):
+  GRANT SELECT ON TABLE orders, products, customers TO gateway_readonly;
+
+  -- Or grant on all current tables in a schema:
+  GRANT SELECT ON ALL TABLES IN SCHEMA public TO gateway_readonly;
+
+  -- Grant on future tables (if using GRANT ALL):
+  ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT ON TABLES TO gateway_readonly;
+
+  POSTGRESQL-SPECIFIC BEHAVIOURS:
+  ───────────────────────────────────────────────────────────────────────────────
+  - db.schema: PostgreSQL uses schemas to namespace tables within a database.
+    Set db.schema to filter JDBC metadata queries to a single schema.
+    This is particularly useful when:
+      * Multiple applications share a single PostgreSQL instance
+      * You want to expose the "reporting" schema without touching "public"
+      * You have a dedicated "ai_access" schema with curated views
+
+  - SERIAL / BIGSERIAL: PostgreSQL's autoincrement columns. JDBC reports
+    these as INTEGER or BIGINT — they map correctly to integer in JSON Schema.
+
+  - BOOLEAN: PostgreSQL has a native boolean type. Maps correctly to
+    boolean in JSON Schema (not 0/1 like MySQL TINYINT(1)).
+
+  - JSONB / JSON: Both map to string in the OpenAPI schema. The JSON
+    structure is not reflected. Consider creating PostgreSQL VIEWs that
+    extract specific JSONB fields as typed columns for cleaner AI access.
+
+  - ARRAY types: PostgreSQL supports array columns (e.g., TEXT[]).
+    Maps to array type in JSON Schema. Element type is not recursively
+    resolved — the schema shows array with no item type specified.
+
+  - UUID: Maps to string in JSON Schema. AI agents will receive UUID
+    values as strings, which is correct.
+
+  - ENUM types: PostgreSQL user-defined enums map to string. The
+    allowed values are not reflected in the schema. Consider adding
+    a column comment listing the valid values.
+
+  - TIMESTAMPTZ vs TIMESTAMP: Both map to string/date-time in JSON Schema.
+    TIMESTAMPTZ preserves timezone information; TIMESTAMP does not.
+    JDBC serializes both as ISO 8601 strings.
+
+  CLOUD SQL NOTES:
+  ───────────────────────────────────────────────────────────────────────────────
+  - Use Private IP for Cloud SQL PostgreSQL.
+  - Cloud SQL PostgreSQL default max_connections by tier:
+      db-f1-micro:       25
+      db-g1-small:       100
+      db-n1-standard-1:  100 (same as g1-small — PG uses more per connection)
+      db-n1-standard-2:  200
+      db-n1-standard-4:  400
+      db-n1-standard-8:  800
+  - Pool sizing formula: floor((max_connections - 5) / apigee_instances)
+  ═══════════════════════════════════════════════════════════════════════════════
+-->
+<JavaCallout name="JC-DBBridge">
+  <DisplayName>DB MCP Bridge — PostgreSQL</DisplayName>
+  <ClassName>io.github.opengw.dbmcp.DBMCPCallout</ClassName>
+  <ResourceURL>java://gateway-db-mcp-1.0.0.jar</ResourceURL>
+
+  <Properties>
+
+    <!-- ── DATABASE CONNECTION ──────────────────────────────────────────── -->
+
+    <!-- Database type: mysql | postgres | mssql -->
+    <Property name="db.type">{propertyset.db-config-postgres.type}</Property>
+
+    <!--
+      db.host: Cloud SQL Private IP is strongly recommended.
+      Example: 10.20.30.40
+      PostgreSQL JDBC URL format: jdbc:postgresql://{host}:{port}/{database}
+    -->
+    <Property name="db.host">{propertyset.db-config-postgres.host}</Property>
+
+    <!-- PostgreSQL default port is 5432 -->
+    <Property name="db.port">5432</Property>
+
+    <!-- Database name -->
+    <Property name="db.database">{propertyset.db-config-postgres.database}</Property>
+
+    <!-- Read-only user created in setup above -->
+    <Property name="db.username">{propertyset.db-config-postgres.username}</Property>
+
+    <!--
+      db.password: reads from the private flow variable set by KVM-GetDBPassword.xml.
+      NEVER hardcode the password here.
+    -->
+    <Property name="db.password">{private.db.password}</Property>
+
+    <!--
+      db.schema: IMPORTANT for PostgreSQL — unlike MySQL, PostgreSQL
+      organizes tables into schemas within a database.
+
+      Set this to filter JDBC metadata queries (getTables, getColumns,
+      getPrimaryKeys) to a single schema. This means:
+        - GET /tables only returns tables in this schema
+        - GET /openapi only includes paths for tables in this schema
+        - Tables in other schemas are invisible to the AI agent
+
+      Common values:
+        public       — default schema for most PostgreSQL databases
+        reporting    — reporting/analytics schema (read-optimized views)
+        analytics    — dedicated analytics schema
+        ai_access    — custom schema with curated views for AI access
+
+      Leave blank to include tables from ALL schemas (not recommended
+      for production — different schemas may contain sensitive tables).
+    -->
+    <Property name="db.schema">{propertyset.db-config-postgres.schema}</Property>
+
+    <!-- ── CONNECTION POOL (HikariCP) ───────────────────────────────────── -->
+
+    <!--
+      pool.maxSize: Maximum connections per Apigee instance.
+      PostgreSQL is more memory-intensive per connection than MySQL.
+      Cloud SQL PostgreSQL max_connections is lower than MySQL for equivalent tiers.
+
+      Be conservative: start with 5, increase based on observed pool metrics.
+    -->
+    <Property name="pool.maxSize">5</Property>
+
+    <Property name="pool.minIdle">1</Property>
+
+    <!-- Wait up to 30 seconds for a connection before returning 503 -->
+    <Property name="pool.connectionTimeout">30000</Property>
+
+    <!-- Evict idle connections after 10 minutes -->
+    <Property name="pool.idleTimeout">600000</Property>
+
+    <!--
+      pool.maxLifetime: PostgreSQL's idle_in_transaction_session_timeout and
+      statement_timeout are set server-side. Keep maxLifetime below
+      PostgreSQL's tcp_keepalives_idle to prevent stale connection errors.
+      30 minutes is a safe default.
+    -->
+    <Property name="pool.maxLifetime">1800000</Property>
+
+    <!-- ── SECURITY ──────────────────────────────────────────────────────── -->
+
+    <!--
+      security.readOnly: true (STRONGLY RECOMMENDED).
+      PostgreSQL enforces this at the JDBC level as well — set
+      the Connection to read-only which prevents accidental writes
+      even if the validator is bypassed.
+    -->
+    <Property name="security.readOnly">true</Property>
+
+    <!--
+      security.allowedTables: Controls which tables are visible to AI agents.
+      Tables not in this list are invisible at all layers:
+        - GET /tables does not include them
+        - GET /openapi does not generate paths for them
+        - GET /tables/{unlisted}/schema returns 403 TABLE_NOT_ALLOWED
+        - They are NOT blocked in /query raw SQL (use db user permissions for that)
+
+      Example: orders,order_items,customers,product_catalog,shipments
+    -->
+    <Property name="security.allowedTables">{propertyset.db-config-postgres.allowedTables}</Property>
+
+    <!--
+      security.maxRows: Hard row cap. Prevents accidental full-table dumps.
+      For PostgreSQL tables with millions of rows, 500 is a safe starting point.
+      AI agents rarely need more than a few hundred rows of context.
+    -->
+    <Property name="security.maxRows">500</Property>
+
+    <!--
+      security.queryTimeout: PostgreSQL also has statement_timeout (server-side).
+      This JDBC-level timeout is a client-side safety net.
+      Set to a value shorter than PostgreSQL's statement_timeout.
+    -->
+    <Property name="security.queryTimeout">30</Property>
+
+    <!-- ── OPENAPI GENERATION ─────────────────────────────────────────────── -->
+
+    <!--
+      api.title: Displayed in tools/list description and OpenAPI spec.
+      Use a domain-meaningful name that helps AI agents understand the context.
+      Example: "Orders Analytics", "Customer Reporting", "Inventory Data"
+    -->
+    <Property name="api.title">{propertyset.db-config-postgres.apiTitle}</Property>
+
+    <Property name="api.version">1.0.0</Property>
+
+  </Properties>
+</JavaCallout>
