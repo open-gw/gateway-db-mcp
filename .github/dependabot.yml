@@ -1,0 +1,69 @@
+version: 2
+
+updates:
+
+  # ── Maven dependencies ──────────────────────────────────────────────────────
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "java"
+    reviewers:
+      - "rinu-dhanaraj"
+    commit-message:
+      prefix: "chore(deps)"
+    # Group minor and patch updates to reduce PR noise
+    groups:
+      jackson:
+        patterns:
+          - "com.fasterxml.jackson*"
+      jdbc-drivers:
+        patterns:
+          - "com.mysql*"
+          - "org.postgresql*"
+          - "com.microsoft.sqlserver*"
+      test-dependencies:
+        patterns:
+          - "org.junit*"
+          - "org.mockito*"
+          - "com.h2database*"
+
+  # ── GitHub Actions ──────────────────────────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "github-actions"
+    reviewers:
+      - "rinu-dhanaraj"
+    commit-message:
+      prefix: "chore(ci)"
+
+  # ── Docker base image ───────────────────────────────────────────────────────
+  - package-ecosystem: "docker"
+    directory: "/sidecar"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 2
+    labels:
+      - "dependencies"
+      - "docker"
+    reviewers:
+      - "rinu-dhanaraj"
+    commit-message:
+      prefix: "chore(docker)"
