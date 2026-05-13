@@ -1,4 +1,4 @@
-FROM eclipse-temurin:11-jre-alpine
+FROM eclipse-temurin:25-jre-alpine
 
 LABEL org.opencontainers.image.title="gateway-db-mcp"
 LABEL org.opencontainers.image.description="Config-driven JDBC bridge for enterprise API gateway MCP proxies"
