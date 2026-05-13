@@ -57,7 +57,7 @@ jobs:
           echo "Proxy bundle created"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           name: gateway-db-mcp v${{ steps.version.outputs.VERSION }}
           body: |
