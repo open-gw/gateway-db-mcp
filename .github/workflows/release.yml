@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'   # triggers on v1.0.0, v1.1.0, v2.0.0, etc.
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write   # needed to create GitHub Release and upload assets
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Install Apigee stub JARs
+        run: |
+          chmod +x scripts/install-apigee-stubs.sh
+          ./scripts/install-apigee-stubs.sh
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Run tests
+        run: mvn test --no-transfer-progress
+
+      - name: Build shaded JAR
+        run: mvn package -DskipTests --no-transfer-progress
+
+      - name: Verify JAR is valid
+        run: |
+          JAR="target/gateway-db-mcp-${{ steps.version.outputs.VERSION }}.jar"
+          echo "Verifying: $JAR"
+          jar tf "$JAR" | grep "DBMCPCallout.class" || (echo "JAR missing DBMCPCallout" && exit 1)
+          echo "JAR is valid"
+
+      - name: Package Apigee proxy bundle
+        run: |
+          cp "target/gateway-db-mcp-${{ steps.version.outputs.VERSION }}.jar" \
+             apiproxy/resources/java/gateway-db-mcp-${{ steps.version.outputs.VERSION }}.jar
+          cd apiproxy
+          zip -r ../gateway-db-mcp-apigee-bundle-${{ steps.version.outputs.VERSION }}.zip . \
+            -x "*.DS_Store"
+          cd ..
+          echo "Proxy bundle created"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: gateway-db-mcp v${{ steps.version.outputs.VERSION }}
+          body: |
+            ## gateway-db-mcp v${{ steps.version.outputs.VERSION }}
+
+            See [CHANGELOG.md](https://github.com/open-gw/gateway-db-mcp/blob/main/CHANGELOG.md) for what changed in this release.
+
+            ## Quick start
+
+            **Apigee X embedded mode:**
+            1. Download `gateway-db-mcp-${{ steps.version.outputs.VERSION }}.jar` below
+            2. Place in `apiproxy/resources/java/` in your proxy bundle
+            3. Configure `JC-DBBridge.xml` — see [docs/apigee/README.md](https://github.com/open-gw/gateway-db-mcp/blob/main/docs/apigee/README.md)
+
+            **Docker sidecar mode:**
+            ```bash
+            docker pull ghcr.io/open-gw/gateway-db-mcp:${{ steps.version.outputs.VERSION }}
+            ```
+
+            **Download the pre-built Apigee proxy bundle** (`gateway-db-mcp-apigee-bundle-*.zip`) to skip the Maven build step.
+
+            ## Checksums
+            ```
+            $(sha256sum target/gateway-db-mcp-${{ steps.version.outputs.VERSION }}.jar)
+            $(sha256sum gateway-db-mcp-apigee-bundle-${{ steps.version.outputs.VERSION }}.zip)
+            ```
+          files: |
+            target/gateway-db-mcp-${{ steps.version.outputs.VERSION }}.jar
+            gateway-db-mcp-apigee-bundle-${{ steps.version.outputs.VERSION }}.zip
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload JAR as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-db-mcp-${{ steps.version.outputs.VERSION }}
+          path: |
+            target/gateway-db-mcp-${{ steps.version.outputs.VERSION }}.jar
+            gateway-db-mcp-apigee-bundle-${{ steps.version.outputs.VERSION }}.zip

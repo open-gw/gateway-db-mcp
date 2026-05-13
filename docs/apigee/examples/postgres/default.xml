@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  default.xml — Proxy Endpoint (PostgreSQL example)
+  Identical structure to the MySQL example. The only difference is the
+  basepath — use a domain-specific path convention.
+
+  Policy execution order:
+    1. KVM-GetDBPassword  — loads DB password into private.db.password
+    2. VA-VerifyToken     — validates OAuth 2.0 token        [add yours]
+    3. SA-RateLimit       — per-agent rate limiting           [add yours]
+    4. JC-DBBridge        — executes DB operation, writes response
+    5. ML-OTELLog         — structured audit log to Cloud Logging
+-->
+<ProxyEndpoint name="default">
+  <Description>gateway-db-mcp Bridge — PostgreSQL</Description>
+
+  <HTTPProxyConnection>
+    <!--
+      Change basepath to match your domain.
+      Convention: /db-mcp/{domain-name}
+      Examples:   /db-mcp/reporting  /db-mcp/analytics  /db-mcp/finance
+    -->
+    <BasePath>/db-mcp</BasePath>
+    <VirtualHost>secure</VirtualHost>
+  </HTTPProxyConnection>
+
+  <PreFlow name="PreFlow">
+    <Request>
+      <Step><Name>KVM-GetDBPassword</Name></Step>
+      <!--
+        <Step><Name>VA-VerifyToken</Name></Step>
+        <Step><Name>SA-AgentRateLimit</Name></Step>
+      -->
+    </Request>
+    <Response/>
+  </PreFlow>
+
+  <Flows>
+    <Flow name="bridge-all-operations">
+      <Request>
+        <Step><Name>JC-DBBridge</Name></Step>
+      </Request>
+      <Response>
+        <Step><Name>ML-OTELLog</Name></Step>
+      </Response>
+      <Condition>proxy.pathsuffix MatchesPath "/**"</Condition>
+    </Flow>
+  </Flows>
+
+  <PostFlow name="PostFlow">
+    <Request/>
+    <Response/>
+  </PostFlow>
+
+  <RouteRule name="NoRoute"/>
+
+</ProxyEndpoint>

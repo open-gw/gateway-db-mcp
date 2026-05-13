@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  JC-DBBridge.xml — Main JavaCallout Policy
+  ════════════════════════════════════════════════════════════════════════════════
+  This is the primary configuration file for gateway-db-mcp.
+  Edit the <Properties> block below to point at your database.
+
+  REQUIRED SETUP BEFORE DEPLOYING:
+    1. Create Property Set "db-config" in Apigee console (non-sensitive config)
+    2. Create encrypted KVM "db-secrets" with key "password" (sensitive)
+    3. Add KVM-GetDBPassword.xml to PreFlow BEFORE this policy
+    4. Run: mvn clean package  (copies JAR to apiproxy/resources/java/)
+
+  See docs/apigee/README.md for the full step-by-step guide.
+  See docs/apigee/examples/mysql/ and docs/apigee/examples/postgres/
+  for database-specific configurations with detailed commentary.
+  ════════════════════════════════════════════════════════════════════════════════
+-->
+<JavaCallout name="JC-DBBridge">
+  <DisplayName>DB MCP Bridge</DisplayName>
+  <ClassName>io.github.opengw.dbmcp.DBMCPCallout</ClassName>
+  <ResourceURL>java://gateway-db-mcp-1.0.0.jar</ResourceURL>
+
+  <Properties>
+
+    <!-- ── DATABASE CONNECTION ─────────────────────────────────────────── -->
+    <!-- db.type: mysql | postgres | mssql -->
+    <Property name="db.type">{propertyset.db-config.type}</Property>
+    <Property name="db.host">{propertyset.db-config.host}</Property>
+    <Property name="db.port">{propertyset.db-config.port}</Property>
+    <Property name="db.database">{propertyset.db-config.database}</Property>
+    <Property name="db.username">{propertyset.db-config.username}</Property>
+    <!-- NEVER hardcode — reads from encrypted KVM via KVM-GetDBPassword.xml -->
+    <Property name="db.password">{private.db.password}</Property>
+    <!-- db.schema: required for PostgreSQL schema scoping; leave blank for MySQL -->
+    <!-- <Property name="db.schema">{propertyset.db-config.schema}</Property> -->
+
+    <!-- ── CONNECTION POOL ─────────────────────────────────────────────── -->
+    <!-- pool.maxSize × Apigee instances must be < DB max_connections      -->
+    <Property name="pool.maxSize">10</Property>
+    <Property name="pool.minIdle">2</Property>
+    <Property name="pool.connectionTimeout">30000</Property>
+    <Property name="pool.idleTimeout">600000</Property>
+    <Property name="pool.maxLifetime">1800000</Property>
+
+    <!-- ── SECURITY ────────────────────────────────────────────────────── -->
+    <!-- readOnly: true blocks all writes. Keep true in production.        -->
+    <Property name="security.readOnly">true</Property>
+    <!-- allowedTables: comma-separated. Empty = all tables visible to user -->
+    <Property name="security.allowedTables">{propertyset.db-config.allowedTables}</Property>
+    <!-- maxRows: hard cap on rows returned per operation (1–100000)       -->
+    <Property name="security.maxRows">1000</Property>
+    <!-- queryTimeout: seconds before query abort (1–300)                  -->
+    <Property name="security.queryTimeout">30</Property>
+
+    <!-- ── OPENAPI GENERATION ──────────────────────────────────────────── -->
+    <Property name="api.title">{propertyset.db-config.apiTitle}</Property>
+    <Property name="api.version">1.0.0</Property>
+
+  </Properties>
+</JavaCallout>

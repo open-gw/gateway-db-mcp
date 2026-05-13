@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  ML-OTELLog.xml — Structured OTEL Audit Log
+  Emits a JSON log entry to Cloud Logging for every bridge operation.
+  Attach to the proxy PostFlow response — runs after JC-DBBridge completes.
+
+  Log entries appear in Cloud Logging under:
+    resource.type = "apigee.googleapis.com/Environment"
+
+  Query example:
+    jsonPayload.dbOperation="RUN_QUERY"
+    jsonPayload.clientId="my-ai-agent"
+-->
+<MessageLogging name="ML-OTELLog">
+  <DisplayName>OTEL Structured Audit Log</DisplayName>
+  <CloudLogging>
+    <LogName>projects/{organization.name}/logs/gateway-db-mcp</LogName>
+    <Message contentType="application/json">{
+  "timestamp":    "{system.timestamp}",
+  "traceId":      "{request.header.traceparent}",
+  "proxy":        "{apiproxy.name}",
+  "revision":     "{apiproxy.revision}",
+  "environment":  "{environment.name}",
+  "clientIP":     "{client.ip}",
+  "clientId":     "{token.client_id}",
+  "httpMethod":   "{request.verb}",
+  "pathSuffix":   "{proxy.pathsuffix}",
+  "responseCode": "{response.status.code}",
+  "dbOperation":  "{dbmcp.operation}",
+  "rowCount":     "{dbmcp.rowCount}",
+  "errorCode":    "{dbmcp.error.code}",
+  "errorMessage": "{dbmcp.error.message}",
+  "latencyMs":    "{client.received.end.timestamp}"
+}</Message>
+    <ResourceType>apigee.googleapis.com/Environment</ResourceType>
+  </CloudLogging>
+</MessageLogging>

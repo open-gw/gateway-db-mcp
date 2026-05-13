@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<APIProxy revision="1" name="gateway-db-mcp-bridge">
+  <Description>
+    gateway-db-mcp — Config-driven JDBC bridge for enterprise API gateway MCP proxies.
+    Exposes MySQL, PostgreSQL, and MSSQL databases as MCP tool endpoints via Apigee X.
+    https://github.com/open-gw/gateway-db-mcp
+  </Description>
+  <DisplayName>gateway-db-mcp Bridge</DisplayName>
+  <Policies>
+    <Policy>JC-DBBridge</Policy>
+    <Policy>KVM-GetDBPassword</Policy>
+    <Policy>ML-OTELLog</Policy>
+  </Policies>
+  <ProxyEndpoints>
+    <ProxyEndpoint>default</ProxyEndpoint>
+  </ProxyEndpoints>
+  <Resources>
+    <Resource>java://gateway-db-mcp-1.0.0.jar</Resource>
+  </Resources>
+  <TargetEndpoints/>
+</APIProxy>

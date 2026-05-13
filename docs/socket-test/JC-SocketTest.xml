@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  JC-SocketTest.xml
+  Deploy this policy to validate that the Apigee X JVM can open TCP
+  connections to your database host before deploying gateway-db-mcp.
+-->
+<JavaCallout name="JC-SocketTest">
+  <DisplayName>Socket Test</DisplayName>
+  <ClassName>io.github.opengw.dbmcp.sockettest.SocketTestCallout</ClassName>
+  <ResourceURL>java://socket-test-1.0.0.jar</ResourceURL>
+</JavaCallout>
