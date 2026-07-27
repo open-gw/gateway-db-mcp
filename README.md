@@ -462,17 +462,20 @@ All PRs require the H2 test suite to pass. For new database support, add corresp
 If you use gateway-db-mcp in research, please cite:
 
 ```bibtex
-@inproceedings{dhanaraj2026gatewaydbmcp,
+@software{dhanaraj2026gatewaydbmcp,
+  author    = {Dhanaraj, Rinu},
   title     = {{GatewayDB-MCP}: A Configuration-Driven Bridge from {JDBC} Databases
                to {MCP} Tool Endpoints in Enterprise {API} Gateways},
-  author    = {Dhanaraj, Rinu},
-  booktitle = {Proceedings of the IEEE International Conference on
-               Software Architecture (ICSA)},
   year      = {2026},
-  doi       = {10.5281/zenodo.xxxxxxx}
+  publisher = {Zenodo},
+  version   = {v1.0.0},
+  doi       = {10.5281/zenodo.20174426},
+  url       = {https://doi.org/10.5281/zenodo.20174426}
 }
 ```
+A companion paper is available as a preprint on SSRN (Abstract ID 6763918): https://ssrn.com/abstract=6763918
 
+The paper has been submitted for peer review. Citation details will be updated on acceptance.
 ---
 
 ## License
