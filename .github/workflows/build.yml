@@ -46,7 +46,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results
           path: target/surefire-reports/
@@ -81,7 +81,7 @@ jobs:
           jar tf "$JAR" | grep -q "io/github/opengw/dbmcp/DBMCPCallout.class" \
             || { echo "JAR missing DBMCPCallout.class"; exit 1; }
       - name: Upload JAR artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gateway-db-mcp-jar-main
           path: target/gateway-db-mcp-*.jar
