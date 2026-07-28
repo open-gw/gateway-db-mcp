@@ -21,31 +21,28 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - name: Install Apigee mock JARs
-        # These are provided-scope JARs not on Maven Central.
-        # We install minimal stubs for CI compilation.
+      - name: Install Apigee stub JARs
+        # provided-scope APIs are not on Maven Central — compile real interface stubs
         run: |
-          mkdir -p $HOME/.m2/repository/com/apigee/edge/expressions/1.0.0
-          mkdir -p $HOME/.m2/repository/com/apigee/edge/message-flow/1.0.0
-          # Create minimal stub JARs (empty — just need to satisfy compilation)
-          echo "PK" > /tmp/stub.jar
-          cp /tmp/stub.jar $HOME/.m2/repository/com/apigee/edge/expressions/1.0.0/expressions-1.0.0.jar
-          cp /tmp/stub.jar $HOME/.m2/repository/com/apigee/edge/message-flow/1.0.0/message-flow-1.0.0.jar
-          # Install with minimal POM
-          mvn install:install-file -q \
-            -Dfile=$HOME/.m2/repository/com/apigee/edge/expressions/1.0.0/expressions-1.0.0.jar \
-            -DgroupId=com.apigee.edge -DartifactId=expressions \
-            -Dversion=1.0.0 -Dpackaging=jar
-          mvn install:install-file -q \
-            -Dfile=$HOME/.m2/repository/com/apigee/edge/message-flow/1.0.0/message-flow-1.0.0.jar \
-            -DgroupId=com.apigee.edge -DartifactId=message-flow \
-            -Dversion=1.0.0 -Dpackaging=jar
+          chmod +x scripts/install-apigee-stubs.sh
+          ./scripts/install-apigee-stubs.sh
 
-      - name: Build (skip tests for compilation check)
-        run: mvn compile -q
+      - name: Build
+        run: mvn compile --no-transfer-progress
 
       - name: Run unit tests
-        run: mvn test -pl . --no-transfer-progress
+        run: mvn test --no-transfer-progress
+
+      - name: Package shaded JAR
+        run: mvn package -DskipTests --no-transfer-progress
+
+      - name: Verify shaded JAR contains DBMCPCallout
+        run: |
+          JAR=$(ls target/gateway-db-mcp-*.jar | head -n1)
+          echo "Checking: $JAR"
+          jar tf "$JAR" | grep -q "io/github/opengw/dbmcp/DBMCPCallout.class" \
+            || { echo "JAR missing DBMCPCallout.class"; exit 1; }
+          echo "OK: DBMCPCallout.class present in shaded JAR"
 
       - name: Upload test results
         if: always()
@@ -54,6 +51,13 @@ jobs:
           name: test-results
           path: target/surefire-reports/
 
+      - name: Upload shaded JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-db-mcp-jar
+          path: target/gateway-db-mcp-*.jar
+
+  # Keep packaging on main for convenience; stubs must be installed first.
   release:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: build-and-test
@@ -65,10 +69,19 @@ jobs:
           java-version: '11'
           distribution: 'temurin'
           cache: maven
+      - name: Install Apigee stub JARs
+        run: |
+          chmod +x scripts/install-apigee-stubs.sh
+          ./scripts/install-apigee-stubs.sh
       - name: Package shaded JAR
-        run: mvn package -DskipTests -q
+        run: mvn package -DskipTests --no-transfer-progress
+      - name: Verify shaded JAR contains DBMCPCallout
+        run: |
+          JAR=$(ls target/gateway-db-mcp-*.jar | head -n1)
+          jar tf "$JAR" | grep -q "io/github/opengw/dbmcp/DBMCPCallout.class" \
+            || { echo "JAR missing DBMCPCallout.class"; exit 1; }
       - name: Upload JAR artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gateway-db-mcp-jar
+          name: gateway-db-mcp-jar-main
           path: target/gateway-db-mcp-*.jar
