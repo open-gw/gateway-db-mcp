@@ -35,9 +35,9 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <hikari.version>5.0.1</hikari.version>
     <jackson.version>2.15.2</jackson.version>
-    <mysql.version>8.0.33</mysql.version>
-    <postgres.version>42.6.0</postgres.version>
-    <mssql.version>12.4.1.jre11</mssql.version>
+    <mysql.version>26.7.0</mysql.version>
+    <postgres.version>42.7.13</postgres.version>
+    <mssql.version>13.4.0.jre11</mssql.version>
     <h2.version>2.2.224</h2.version>
     <junit.version>5.10.0</junit.version>
     <mockito.version>5.4.0</mockito.version>
