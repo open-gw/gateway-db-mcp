@@ -38,9 +38,9 @@
     <mysql.version>8.0.33</mysql.version>
     <postgres.version>42.6.0</postgres.version>
     <mssql.version>12.4.1.jre11</mssql.version>
-    <h2.version>2.2.224</h2.version>
-    <junit.version>5.10.0</junit.version>
-    <mockito.version>5.4.0</mockito.version>
+    <h2.version>2.4.240</h2.version>
+    <junit.version>6.1.2</junit.version>
+    <mockito.version>5.23.0</mockito.version>
     <jmh.version>1.37</jmh.version>
   </properties>
 
