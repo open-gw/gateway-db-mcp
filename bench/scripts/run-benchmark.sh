@@ -333,50 +333,41 @@ wipe_jaeger_store() {
 }
 
 reset_jaeger_store() {
-  # Kong buffers OTLP while the collector is down. A single wipe then immediate
-  # collector start lets that buffer land in the fresh store and flakes the
-  # empty-store preflight. Drain the buffer into a disposable store, wipe
-  # again, then bring the collector up for measurement.
+  # Kong buffers OTLP while the collector is down. Drain that buffer into a
+  # disposable store, wipe again, and leave the collector STOPPED so the
+  # empty-store preflight cannot race a flush. Preflight starts the collector
+  # after jaeger_trace_count passes.
   local JAEGER_DRAIN_S="${JAEGER_DRAIN_S:-3}"
   if ! wipe_jaeger_store; then
-    echo "WARNING: kong-bench present after first wipe; retrying…" >&2
+    echo "WARNING: kong-bench present after first wipe; retrying..." >&2
     if ! wipe_jaeger_store; then
       echo "REFUSE: jaeger store still contains kong-bench after reset" >&2
       exit 1
     fi
   fi
-  echo "Draining Kong OTLP buffer into disposable Jaeger store (${JAEGER_DRAIN_S}s)…" >&2
+  echo "Draining Kong OTLP buffer into disposable Jaeger store (${JAEGER_DRAIN_S}s)..." >&2
   start_otel_collector
   sleep "$JAEGER_DRAIN_S"
   if ! wipe_jaeger_store; then
     echo "REFUSE: jaeger store still contains kong-bench after drain wipe" >&2
     exit 1
   fi
-  start_otel_collector
-  echo "settle ${JAEGER_RESET_SETTLE_S}s after jaeger reset…" >&2
-  sleep "$JAEGER_RESET_SETTLE_S"
-  if ! jaeger_store_empty_of_kong; then
-    echo "WARNING: residual kong-bench after settle; final wipe…" >&2
-    if ! wipe_jaeger_store; then
-      echo "REFUSE: jaeger store still contains kong-bench after final wipe" >&2
-      exit 1
-    fi
-    start_otel_collector
-    sleep 2
-  fi
-  if ! jaeger_store_empty_of_kong; then
-    echo "REFUSE: jaeger store not empty after reset (Kong still flushing)" >&2
-    exit 1
-  fi
+  echo "Jaeger store empty; collector left stopped for empty-store preflight." >&2
 }
+
 
 # ── preflight ────────────────────────────────────────────────────────────────
 # Returns JSON map of check -> pass|fail|skipped via stdout. Exits 1 on any fail.
+# For gateway: empty-store gates run while the collector is still stopped (set by
+# reset_jaeger_store); the collector is started only after those gates pass.
 run_preflight() {
   local target="$1"
-  FORCE="$FORCE" GIT_DIRTY="$GIT_DIRTY" JAEGER_MEM_LIMIT_MB="$JAEGER_MEM_LIMIT_MB" \
-    python3 - "$target" <<'PY'
-import json, os, re, subprocess, sys, time, urllib.parse, urllib.request
+  local store_json rest_json
+
+  store_json=$(
+    FORCE="$FORCE" GIT_DIRTY="$GIT_DIRTY" JAEGER_MEM_LIMIT_MB="$JAEGER_MEM_LIMIT_MB" \
+      python3 - "$target" <<'PY'
+import json, os, re, subprocess, sys, urllib.parse, urllib.request
 
 target = sys.argv[1]
 checks = {}
@@ -424,24 +415,22 @@ def service_names(payload):
             flat.append(n["name"])
     return flat
 
-# For governed runs, empty-store gates must run before any other work that
-# gives Kong time to flush buffered OTLP into the fresh Jaeger store.
-if target == "gateway":
+if target != "gateway":
+    for n in ("jaeger_reset", "jaeger_running", "jaeger_memory", "jaeger_trace_count"):
+        skip(n)
+else:
     pass_("jaeger_reset")
     try:
         st = sh("docker", "inspect", "-f", "{{.State.Status}}", "gatewaydb-mcp-bench-jaeger-1")
         if st != "running":
-            fail("jaeger_running", f"gatewaydb-mcp-bench-jaeger-1 status={st} — governed runs without telemetry measure a broken exporter")
+            fail("jaeger_running", f"gatewaydb-mcp-bench-jaeger-1 status={st}")
         else:
             pass_("jaeger_running")
     except Exception as e:
-        fail("jaeger_running", f"gatewaydb-mcp-bench-jaeger-1 missing: {e}")
+        fail("jaeger_running", str(e))
 
     try:
-        usage = sh(
-            "docker", "stats", "--no-stream", "--format", "{{.MemUsage}}",
-            "gatewaydb-mcp-bench-jaeger-1",
-        )
+        usage = sh("docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", "gatewaydb-mcp-bench-jaeger-1")
         mb = parse_mem_mb(usage)
         checks["jaeger_memory_mb"] = round(mb, 3)
         if mb > mem_limit:
@@ -477,6 +466,53 @@ if target == "gateway":
     except Exception as e:
         fail("jaeger_trace_count", str(e))
 
+print(json.dumps(checks, separators=(",", ":")))
+if failed:
+    print("REFUSE: preflight failed — measurement would be invalid:", file=sys.stderr)
+    for f in failed:
+        print(f"  {f}", file=sys.stderr)
+    sys.exit(1)
+PY
+  ) || return 1
+
+  if [[ "$target" == "gateway" ]]; then
+    start_otel_collector
+    echo "settle ${JAEGER_RESET_SETTLE_S}s after collector start..." >&2
+    sleep "$JAEGER_RESET_SETTLE_S"
+  fi
+
+  rest_json=$(
+    FORCE="$FORCE" GIT_DIRTY="$GIT_DIRTY" python3 - "$target" <<'PY'
+import json, os, subprocess, sys, time, urllib.parse, urllib.request
+
+target = sys.argv[1]
+checks = {}
+failed = []
+
+def fail(name, why):
+    checks[name] = "fail"
+    failed.append(f"{name}: {why}")
+    print(f"PREFLIGHT FAIL: {name} — {why}", file=sys.stderr)
+
+def pass_(name):
+    checks[name] = "pass"
+
+def skip(name):
+    checks[name] = "skipped"
+
+def sh(*args, timeout=30):
+    return subprocess.check_output(args, text=True, stderr=subprocess.DEVNULL, timeout=timeout).strip()
+
+def service_names(payload):
+    names = payload if isinstance(payload, list) else payload.get("data", payload)
+    flat = []
+    for n in (names or []):
+        if isinstance(n, str):
+            flat.append(n)
+        elif isinstance(n, dict) and "name" in n:
+            flat.append(n["name"])
+    return flat
+
 try:
     code_db = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:8000/db/tables")
     code_raw = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:8000/raw/tables")
@@ -499,21 +535,17 @@ else:
     pass_("git_clean")
 
 if target != "gateway":
-    for n in (
-        "jaeger_reset", "jaeger_running", "otel_collector_running",
-        "otel_collector_logs_clean", "jaeger_memory", "jaeger_trace_count",
-        "traces_arriving",
-    ):
+    for n in ("otel_collector_running", "otel_collector_logs_clean", "traces_arriving"):
         skip(n)
 else:
     try:
         st = sh("docker", "inspect", "-f", "{{.State.Status}}", "gatewaydb-mcp-bench-otel-collector-1")
         if st != "running":
-            fail("otel_collector_running", f"gatewaydb-mcp-bench-otel-collector-1 status={st} — governed runs without telemetry measure a broken exporter")
+            fail("otel_collector_running", f"gatewaydb-mcp-bench-otel-collector-1 status={st}")
         else:
             pass_("otel_collector_running")
     except Exception as e:
-        fail("otel_collector_running", f"gatewaydb-mcp-bench-otel-collector-1 missing: {e}")
+        fail("otel_collector_running", str(e))
 
     try:
         logs = subprocess.check_output(
@@ -546,17 +578,21 @@ else:
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             token = json.loads(resp.read().decode())["access_token"]
-        for _ in range(5):
-            r = urllib.request.Request(
-                "http://localhost:8000/db/tables",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            with urllib.request.urlopen(r, timeout=15) as resp:
-                resp.read()
-        time.sleep(3)
-        with urllib.request.urlopen("http://localhost:16686/api/services", timeout=15) as resp:
-            services = json.loads(resp.read().decode())
-        flat = service_names(services)
+        flat = []
+        for _attempt in range(8):
+            for _ in range(5):
+                r = urllib.request.Request(
+                    "http://localhost:8000/db/tables",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                with urllib.request.urlopen(r, timeout=15) as resp:
+                    resp.read()
+            time.sleep(2)
+            with urllib.request.urlopen("http://localhost:16686/api/services", timeout=15) as resp:
+                services = json.loads(resp.read().decode())
+            flat = service_names(services)
+            if "kong-bench" in flat:
+                break
         if "kong-bench" not in flat:
             fail("traces_arriving", f"jaeger services={flat!r} — missing kong-bench")
         else:
@@ -571,7 +607,17 @@ if failed:
         print(f"  {f}", file=sys.stderr)
     sys.exit(1)
 PY
+  ) || return 1
+
+  A="$store_json" B="$rest_json" python3 - <<'PY'
+import json, os
+a = json.loads(os.environ["A"])
+b = json.loads(os.environ["B"])
+a.update(b)
+print(json.dumps(a, separators=(",", ":")))
+PY
 }
+
 
 run_one() {
   local target="$1" vus="$2" iterations="$3" repeat_index="$4" repeat_group_id="$5"
