@@ -2107,3 +2107,12 @@ INSERT INTO orders (id,customer_id,status,total,placed_at) VALUES
 (2000,29,'refunded',353.46,NULL);
 
 INSERT INTO internal_audit (id,actor,action) VALUES (1,'system','bootstrap');
+
+-- ---------------------------------------------------------------------------
+-- Layer 1: SELECT-only application credential.
+-- Created here (not via MYSQL_USER) so the official entrypoint cannot GRANT ALL
+-- to the bridge user. Mirrors init-postgres.sql.
+-- ---------------------------------------------------------------------------
+CREATE USER IF NOT EXISTS 'readonly_user'@'%' IDENTIFIED BY 'readonlypassword';
+GRANT SELECT ON testdb.* TO 'readonly_user'@'%';
+FLUSH PRIVILEGES;

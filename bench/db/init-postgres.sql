@@ -2107,3 +2107,19 @@ INSERT INTO orders (id,customer_id,status,total,placed_at) VALUES
 (2000,20,'pending',565.57,NULL);
 
 INSERT INTO internal_audit (id,actor,action) VALUES (1,'system','bootstrap');
+
+-- ---------------------------------------------------------------------------
+-- Layer 1: SELECT-only application credential.
+-- POSTGRES_USER is postgres (superuser). The bridge connects as readonly_user.
+-- ---------------------------------------------------------------------------
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'readonly_user') THEN
+    CREATE ROLE readonly_user LOGIN PASSWORD 'readonlypassword';
+  END IF;
+END
+$$;
+GRANT CONNECT ON DATABASE testdb TO readonly_user;
+GRANT USAGE ON SCHEMA public TO readonly_user;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO readonly_user;

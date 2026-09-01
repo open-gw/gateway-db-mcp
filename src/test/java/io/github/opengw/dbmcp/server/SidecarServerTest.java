@@ -51,6 +51,7 @@ class SidecarServerTest {
         assertEquals(200, res.statusCode());
         JsonNode body = MAPPER.readTree(res.body());
         assertEquals("ok", body.get("status").asText());
+        assertExplicitContentLength(res);
     }
 
     @Test
@@ -62,6 +63,7 @@ class SidecarServerTest {
         body.get("tables").forEach(n -> tables.add(n.asText().toLowerCase()));
         assertEquals(Set.of("orders", "products"), tables);
         assertFalse(tables.contains("employees"));
+        assertExplicitContentLength(res);
     }
 
     @Test
@@ -71,6 +73,20 @@ class SidecarServerTest {
         JsonNode err = MAPPER.readTree(res.body()).get("error");
         assertEquals("FORBIDDEN", err.get("code").asText());
         assertTrue(err.get("message").asText().toLowerCase().contains("ddl"));
+        assertExplicitContentLength(res);
+    }
+
+    /**
+     * Guard against reintroducing chunked responses ({@code sendResponseHeaders(..., 0)}),
+     * which stalls ~40 ms behind TCP delayed ACK on small bodies.
+     */
+    private static void assertExplicitContentLength(HttpResponse<String> res) {
+        var lengths = res.headers().allValues("Content-Length");
+        assertFalse(lengths.isEmpty(), "Content-Length header must be present (not chunked)");
+        assertEquals(1, lengths.size(), "exactly one Content-Length value");
+        assertEquals(res.body().getBytes(java.nio.charset.StandardCharsets.UTF_8).length,
+                Integer.parseInt(lengths.get(0)),
+                "Content-Length must match body byte length");
     }
 
     @Test

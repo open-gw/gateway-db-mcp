@@ -6,11 +6,16 @@
 # than no check — it creates false confidence. Each assertion below would flip
 # to FAIL under a concrete, realistic regression (wrong status, empty body,
 # missing allowlist filter, or uncapped row count).
+#
+# A check which cannot distinguish the layer it names from the layer above it
+# is not a valid check. L1 (DB credential) and L4 (QueryValidator) are therefore
+# exercised on different paths: L1 bypasses the bridge entirely.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 D=http://localhost:8080
 G=http://localhost:8000/db
+COMPOSE=(docker compose -f docker-compose.bench.yml)
 
 # Prefer compose value; allow override for local experiments.
 SECURITY_MAX_ROWS="${SECURITY_MAX_ROWS:-$(
@@ -26,13 +31,35 @@ echo "== L2: gateway rejects unauthenticated requests =="
 code=$(curl -s -o /dev/null -w '%{http_code}' "$G/tables")
 [ "$code" = "401" ] && pass "no token -> 401" || fail "no token -> $code (expected 401)"
 
-echo "== L1: read-only credential / validator blocks writes =="
-code=$(curl -s -o /tmp/e-sec-l1.json -w '%{http_code}' -X POST "$D/query" \
+echo "== L1: read-only DB credential rejects writes (bypasses bridge) =="
+# Issue INSERT directly as readonly_user. This is the only way to demonstrate
+# Layer 1 holds when Layers 2–5 are absent. Clean up afterwards so a permissive
+# grant cannot leave id=99999 for E3 to stumble over.
+L1_SQL="INSERT INTO orders (id,customer_id,status,total) VALUES (99999,1,'x',1.0);"
+L1_CLEAN="DELETE FROM orders WHERE id=99999;"
+set +e
+l1_out=$("${COMPOSE[@]}" exec -T mysql-a \
+  mysql -ureadonly_user -preadonlypassword testdb -e "$L1_SQL" 2>&1)
+l1_rc=$?
+set -e
+# Always attempt cleanup as root (no-op if INSERT was denied).
+"${COMPOSE[@]}" exec -T mysql-a \
+  mysql -uroot -prootpassword testdb -e "$L1_CLEAN" >/dev/null 2>&1 || true
+if [ "$l1_rc" -eq 0 ]; then
+  fail "INSERT as readonly_user succeeded (rc=0) — Layer 1 grant is not SELECT-only. output: $l1_out"
+elif echo "$l1_out" | grep -qiE 'denied|permission|access'; then
+  pass "INSERT as readonly_user denied (rc=$l1_rc)"
+else
+  fail "INSERT as readonly_user failed without a permission error (rc=$l1_rc): $l1_out"
+fi
+
+echo "== L4: QueryValidator blocks writes through the bridge =="
+code=$(curl -s -o /tmp/e-sec-l4-write.json -w '%{http_code}' -X POST "$D/query" \
   -H 'Content-Type: application/json' \
   -d '{"sql":"INSERT INTO orders (id,customer_id,status,total) VALUES (99999,1,'"'"'x'"'"',1.0)"}')
-body=$(cat /tmp/e-sec-l1.json)
+body=$(cat /tmp/e-sec-l4-write.json)
 if [ "$code" = "403" ] && echo "$body" | grep -qi 'forbidden\|not permitted\|denied'; then
-  pass "INSERT rejected (HTTP $code)"
+  pass "INSERT rejected by validator (HTTP $code)"
 else
   fail "INSERT expected HTTP 403 + FORBIDDEN body, got $code: $body"
 fi
