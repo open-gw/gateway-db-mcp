@@ -1,0 +1,250 @@
+{
+  "info": {
+    "description": "Auto-generated from live DB schema. Import into Apigee X / Kong / Azure APIM MCP proxy configuration. Source: https://github.com/open-gw/gateway-db-mcp",
+    "title": "Test DB MCP Bridge — testdb",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/query": {
+      "post": {
+        "operationId": "run_query",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Query results"
+          }
+        },
+        "summary": "Execute a parameterized SELECT statement",
+        "x-mcp-tool": {
+          "description": "Execute a parameterized SQL SELECT. Use ? placeholders with params[] array.",
+          "name": "run_query"
+        }
+      }
+    },
+    "/tables": {
+      "get": {
+        "operationId": "list_tables",
+        "responses": {
+          "200": {
+            "description": "List all accessible tables in database: testdb"
+          }
+        },
+        "summary": "List all accessible tables in database: testdb"
+      }
+    },
+    "/tables/customers/rows": {
+      "get": {
+        "operationId": "get_customers_rows",
+        "parameters": [
+          {
+            "description": "Max rows (capped at 500)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Pagination offset",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Column to order by",
+            "in": "query",
+            "name": "orderBy",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "asc or desc",
+            "in": "query",
+            "name": "dir",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retrieve rows from table: customers"
+          }
+        },
+        "summary": "Retrieve rows from table: customers",
+        "x-mcp-tool": {
+          "description": "Query rows from database table: customers",
+          "name": "get_customers_rows"
+        }
+      }
+    },
+    "/tables/customers/schema": {
+      "get": {
+        "operationId": "describe_customers_schema",
+        "responses": {
+          "200": {
+            "description": "Describe schema of table: customers"
+          }
+        },
+        "summary": "Describe schema of table: customers",
+        "x-mcp-tool": {
+          "description": "Returns column definitions and primary keys for table: customers",
+          "name": "describe_customers_schema"
+        }
+      }
+    },
+    "/tables/orders/rows": {
+      "get": {
+        "operationId": "get_orders_rows",
+        "parameters": [
+          {
+            "description": "Max rows (capped at 500)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Pagination offset",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Column to order by",
+            "in": "query",
+            "name": "orderBy",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "asc or desc",
+            "in": "query",
+            "name": "dir",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retrieve rows from table: orders"
+          }
+        },
+        "summary": "Retrieve rows from table: orders",
+        "x-mcp-tool": {
+          "description": "Query rows from database table: orders",
+          "name": "get_orders_rows"
+        }
+      }
+    },
+    "/tables/orders/schema": {
+      "get": {
+        "operationId": "describe_orders_schema",
+        "responses": {
+          "200": {
+            "description": "Describe schema of table: orders"
+          }
+        },
+        "summary": "Describe schema of table: orders",
+        "x-mcp-tool": {
+          "description": "Returns column definitions and primary keys for table: orders",
+          "name": "describe_orders_schema"
+        }
+      }
+    },
+    "/tables/products/rows": {
+      "get": {
+        "operationId": "get_products_rows",
+        "parameters": [
+          {
+            "description": "Max rows (capped at 500)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Pagination offset",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Column to order by",
+            "in": "query",
+            "name": "orderBy",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "asc or desc",
+            "in": "query",
+            "name": "dir",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retrieve rows from table: products"
+          }
+        },
+        "summary": "Retrieve rows from table: products",
+        "x-mcp-tool": {
+          "description": "Query rows from database table: products",
+          "name": "get_products_rows"
+        }
+      }
+    },
+    "/tables/products/schema": {
+      "get": {
+        "operationId": "describe_products_schema",
+        "responses": {
+          "200": {
+            "description": "Describe schema of table: products"
+          }
+        },
+        "summary": "Describe schema of table: products",
+        "x-mcp-tool": {
+          "description": "Returns column definitions and primary keys for table: products",
+          "name": "describe_products_schema"
+        }
+      }
+    }
+  }
+}
