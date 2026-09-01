@@ -97,13 +97,15 @@ require_healthy() {
 }
 
 # ── span-file mode ───────────────────────────────────────────────────────────
+# Never pull Jaeger back up as a side effect of refreshing the collector
+# (depends_on would restart it and defeat the telemetry preflight).
 if [[ "$NO_SPAN_FILE" -eq 1 ]]; then
   export OTEL_COLLECTOR_CONFIG=./collector-jaeger-only.yaml
   echo "Using collector-jaeger-only.yaml (--no-span-file)" >&2
+  "${COMPOSE[@]}" up -d --no-deps --force-recreate otel-collector >/dev/null
 else
   export OTEL_COLLECTOR_CONFIG=./collector.yaml
 fi
-"${COMPOSE[@]}" up -d otel-collector >/dev/null
 
 # ── base container health ────────────────────────────────────────────────────
 bad=0
