@@ -46,10 +46,13 @@ services:
     volumes:
       - ./db/init-mysql-a.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpassword"]
+      # Must use TCP — `localhost` hits the Unix socket, which the entrypoint's
+      # temporary init server answers while 3306 is still closed.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -P 3306 --protocol=TCP -u root -prootpassword --silent"]
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 30
+      start_period: 20s
 
   # Identical schema, different rows. Exists solely for E3. Profile-gated so
   # latency runs do not pay for a second MySQL + JVM on the same Docker VM.
@@ -62,10 +65,11 @@ services:
     volumes:
       - ./db/init-mysql-b.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpassword"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -P 3306 --protocol=TCP -u root -prootpassword --silent"]
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 30
+      start_period: 20s
 
   # POSTGRES_USER is the superuser (postgres), not the app credential. readonly_user
   # is created SELECT-only in init-postgres.sql (mirrors MySQL Layer 1).
@@ -79,10 +83,12 @@ services:
     volumes:
       - ./db/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d testdb"]
+      # Force TCP; bare pg_isready uses the local socket and can race init.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U postgres -d testdb"]
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 30
+      start_period: 10s
 
   # ─────────────────────────────────────────────────────────────────────────
   # Bridge instances (one per database)
@@ -103,10 +109,12 @@ services:
     depends_on:
       mysql-a: {condition: service_healthy}
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      # curl -f fails on 503 while the pool is still retrying startup.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 40
+      start_period: 10s
 
   bridge-b:
     build: *bridge-build
@@ -197,10 +205,12 @@ services:
     image: otel/opentelemetry-collector-contrib:0.113.0
     command: ["--config=/etc/otel/collector.yaml"]
     volumes:
-      - ./collector.yaml:/etc/otel/collector.yaml:ro
+      # OTEL_COLLECTOR_CONFIG selects collector.yaml (E3 file exporter) or
+      # collector-jaeger-only.yaml (citable latency: no unbounded spans.jsonl).
+      - ${OTEL_COLLECTOR_CONFIG:-./collector.yaml}:/etc/otel/collector.yaml:ro
       - ./results:/output
     depends_on:
-      - jaeger
+      jaeger: {condition: service_started}
 
   jaeger:
     image: jaegertracing/all-in-one:1.62.0
@@ -208,6 +218,7 @@ services:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
       - "16686:16686"        # UI
+    # Image has no shell/wget; preflight probes the UI HTTP API instead.
 
   # ─────────────────────────────────────────────────────────────────────────
   # Load generator (profile-gated so it does not start with the stack)

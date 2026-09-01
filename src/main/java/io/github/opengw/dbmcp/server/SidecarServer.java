@@ -48,7 +48,7 @@ public final class SidecarServer {
     }
 
     private final CalloutConfig config;
-    private final DataSource dataSource;
+    private final java.util.concurrent.atomic.AtomicReference<DataSource> dataSource;
     private final int port;
     private final int threads;
 
@@ -56,10 +56,12 @@ public final class SidecarServer {
     private ExecutorService executor;
 
     /**
-     * Production constructor — uses the shared {@link ConnectionPoolManager} pool.
+     * Production constructor — pool is attached later after bounded startup retry
+     * (see {@link #main}). HTTP listens immediately so {@code /health} can return 503
+     * while the database is still coming up.
      */
     public SidecarServer(CalloutConfig config, int port, int threads) {
-        this(config, ConnectionPoolManager.getPool(config), port, threads);
+        this(config, (DataSource) null, port, threads);
     }
 
     /**
@@ -67,9 +69,19 @@ public final class SidecarServer {
      */
     public SidecarServer(CalloutConfig config, DataSource dataSource, int port, int threads) {
         this.config = config;
-        this.dataSource = dataSource;
+        this.dataSource = new java.util.concurrent.atomic.AtomicReference<>(dataSource);
         this.port = port;
         this.threads = threads;
+    }
+
+    /** Attach the live pool after successful startup retry. */
+    void attachDataSource(DataSource ds) {
+        if (ds == null) throw new IllegalArgumentException("dataSource must not be null");
+        this.dataSource.set(ds);
+    }
+
+    boolean isPoolReady() {
+        return dataSource.get() != null;
     }
 
     public static void main(String[] args) {
@@ -82,6 +94,8 @@ public final class SidecarServer {
 
         int port = parsePositiveInt(envOr("PORT", "8080"), 8080, "PORT");
         int threads = parsePositiveInt(envOr("SERVER_THREADS", "16"), 16, "SERVER_THREADS");
+        int maxAttempts = parsePositiveInt(envOr("STARTUP_MAX_ATTEMPTS", "30"), 30, "STARTUP_MAX_ATTEMPTS");
+        int retryMs = parsePositiveInt(envOr("STARTUP_RETRY_INTERVAL_MS", "1000"), 1000, "STARTUP_RETRY_INTERVAL_MS");
 
         CalloutConfig config;
         try {
@@ -96,16 +110,47 @@ public final class SidecarServer {
             return;
         }
 
-        ConnectionPoolManager.initialize(config);
+        // HTTP first — /health returns 503 until the pool attaches.
         SidecarServer server = new SidecarServer(config, port, threads);
         try {
             server.start();
         } catch (IOException e) {
             System.err.println("[gateway-db-mcp] Failed to start HTTP server: " + e.getMessage());
-            ConnectionPoolManager.shutdown();
             System.exit(1);
             return;
         }
+
+        Thread poolInit = new Thread(() -> {
+            for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    ConnectionPoolManager.initialize(config);
+                    server.attachDataSource(ConnectionPoolManager.getPool(config));
+                    LOGGER.info("[gateway-db-mcp] Database pool ready on attempt "
+                            + attempt + "/" + maxAttempts);
+                    return;
+                } catch (Exception e) {
+                    LOGGER.info("[gateway-db-mcp] Pool init attempt " + attempt + "/"
+                            + maxAttempts + " failed: " + e.getClass().getSimpleName()
+                            + " — " + e.getMessage());
+                    if (attempt >= maxAttempts) {
+                        System.err.println("[gateway-db-mcp] Database pool failed after "
+                                + maxAttempts + " attempts; giving up.");
+                        ConnectionPoolManager.shutdown();
+                        System.exit(1);
+                        return;
+                    }
+                    try {
+                        Thread.sleep(retryMs);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        System.exit(1);
+                        return;
+                    }
+                }
+            }
+        }, "gateway-db-mcp-pool-init");
+        poolInit.setDaemon(false);
+        poolInit.start();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOGGER.info("[gateway-db-mcp] Shutdown hook — stopping server");
@@ -176,11 +221,18 @@ public final class SidecarServer {
                 return;
             }
 
+            DataSource ds = dataSource.get();
+            if (ds == null) {
+                writeError(exchange, 503, "UNAVAILABLE",
+                        "Database pool is not ready yet");
+                return;
+            }
+
             String body = readBody(exchange);
             MessageContext ctx = SidecarMessageContext.from(body, exchange.getRequestURI().getRawQuery());
 
             DBOperation operation = OperationRouter.route(method, path, config);
-            OperationResult result = operation.execute(dataSource, ctx, config);
+            OperationResult result = operation.execute(ds, ctx, config);
             writeJson(exchange, result.statusCode(), result.body());
 
         } catch (OperationNotFoundException e) {
@@ -205,7 +257,12 @@ public final class SidecarServer {
     }
 
     private void writeHealth(HttpExchange exchange) throws IOException {
-        try (Connection c = dataSource.getConnection()) {
+        DataSource ds = dataSource.get();
+        if (ds == null) {
+            writeJson(exchange, 503, "{\"status\":\"unavailable\"}");
+            return;
+        }
+        try (Connection c = ds.getConnection()) {
             if (c.isValid(2)) {
                 writeJson(exchange, 200, "{\"status\":\"ok\"}");
                 return;

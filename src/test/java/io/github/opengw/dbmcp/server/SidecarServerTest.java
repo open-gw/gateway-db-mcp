@@ -46,6 +46,24 @@ class SidecarServerTest {
     }
 
     @Test
+    void health_returns_503_when_pool_not_ready() throws Exception {
+        SidecarServer pending = new SidecarServer(fx.config, null, 0, 2);
+        pending.start();
+        try {
+            String url = "http://127.0.0.1:" + pending.getPort() + "/health";
+            HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build();
+            HttpResponse<String> res = CLIENT.send(req, HttpResponse.BodyHandlers.ofString());
+            assertEquals(503, res.statusCode());
+            assertEquals("unavailable", MAPPER.readTree(res.body()).get("status").asText());
+        } finally {
+            pending.stop();
+        }
+    }
+
+    @Test
     void health_returns_200() throws Exception {
         HttpResponse<String> res = get("/health");
         assertEquals(200, res.statusCode());
