@@ -337,22 +337,51 @@ reset_jaeger_store() {
   # disposable store, wipe again, and leave the collector STOPPED so the
   # empty-store preflight cannot race a flush. Preflight starts the collector
   # after jaeger_trace_count passes.
-  local JAEGER_DRAIN_S="${JAEGER_DRAIN_S:-3}"
+  #
+  # One drain pass is not always enough after a long governed run — Kong can
+  # still be flushing when the collector comes back. Loop drain+wipe, and if
+  # that still fails, bounce Kong to drop the plugin's OTLP queue.
+  local JAEGER_DRAIN_S="${JAEGER_DRAIN_S:-8}"
+  local attempt
+
   if ! wipe_jaeger_store; then
-    echo "WARNING: kong-bench present after first wipe; retrying..." >&2
+    echo "WARNING: kong-bench present after first wipe; retrying…" >&2
     if ! wipe_jaeger_store; then
       echo "REFUSE: jaeger store still contains kong-bench after reset" >&2
       exit 1
     fi
   fi
-  echo "Draining Kong OTLP buffer into disposable Jaeger store (${JAEGER_DRAIN_S}s)..." >&2
+
+  for attempt in 1 2 3; do
+    echo "Draining Kong OTLP buffer into disposable Jaeger store (${JAEGER_DRAIN_S}s, attempt $attempt)…" >&2
+    start_otel_collector
+    sleep "$JAEGER_DRAIN_S"
+    if wipe_jaeger_store; then
+      echo "Jaeger store empty; collector left stopped for empty-store preflight." >&2
+      return 0
+    fi
+    echo "WARNING: kong-bench still present after drain wipe attempt $attempt…" >&2
+  done
+
+  echo "Restarting Kong to drop residual OTLP buffer…" >&2
+  "${COMPOSE[@]}" restart kong
+  local deadline=$((SECONDS + 120))
+  until docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+        gatewaydb-mcp-bench-kong-1 2>/dev/null | grep -Eq '^(healthy|running)$'; do
+    if (( SECONDS >= deadline )); then
+      echo "REFUSE: kong did not become healthy within 120s after restart" >&2
+      exit 1
+    fi
+    sleep 2
+  done
+  # Drop anything Kong emitted during its own restart into a disposable store.
   start_otel_collector
   sleep "$JAEGER_DRAIN_S"
   if ! wipe_jaeger_store; then
-    echo "REFUSE: jaeger store still contains kong-bench after drain wipe" >&2
+    echo "REFUSE: jaeger store not empty after Kong restart + drain" >&2
     exit 1
   fi
-  echo "Jaeger store empty; collector left stopped for empty-store preflight." >&2
+  echo "Jaeger store empty after Kong restart; collector left stopped for preflight." >&2
 }
 
 
