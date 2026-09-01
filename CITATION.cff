@@ -1,12 +1,61 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it as below."
-title: "GatewayDB-MCP"
+message: >-
+  If you use this software, please cite the archived Zenodo release below.
+  No peer-reviewed version of this work has been published; the companion
+  preprints listed under `identifiers` are preprints only.
+title: >-
+  GatewayDB-MCP: A Configuration-Driven Bridge from JDBC Databases to MCP
+  Tool Endpoints in Enterprise API Gateways
+abstract: >-
+  GatewayDB-MCP is an open-source Java framework that bridges JDBC-compatible
+  relational databases to enterprise API gateway MCP proxies through XML
+  property configuration alone, without custom application code. Bundled JDBC
+  drivers cover MySQL, PostgreSQL, and SQL Server. The framework uses a
+  two-layer architecture in which the gateway layer supplies MCP protocol
+  translation, OAuth 2.1, rate limiting, and OpenTelemetry audit using native
+  gateway policies, while the bridge layer handles JDBC connectivity, schema
+  introspection, query execution, SQL validation, and runtime generation of an
+  x-mcp-tool-annotated OpenAPI 3.0.3 specification. Deployment modes are Apigee
+  X embedded and a Docker sidecar compatible with Kong Gateway and Azure API
+  Management. Known security limitations, including six documented SQL
+  injection payloads that bypass the heuristic query validator, are described in
+  the repository README and SECURITY.md.
+type: software
 authors:
-  - family-names: "Dhanaraj"
-    given-names: "Rinu"
-    affiliation: ""
-    orcid: "https://orcid.org/0009-0007-9082-8846"  # Add if you have one
-repository-code: "https://github.com/open-gw/gateway-db-mcp"
-url: "https://github.com/open-gw/gateway-db-mcp"
+  - family-names: Dhanaraj
+    given-names: Rinu
+    email: hello@open-gw.com
+    orcid: https://orcid.org/0009-0007-9082-8846
+    affiliation: Independent Researcher, Alpharetta, GA, USA
+version: v1.0.1
+date-released: '2026-05-14'
+doi: 10.5281/zenodo.20174426
 license: Apache-2.0
-date-released: "2026-05-01"
+repository-code: https://github.com/open-gw/gateway-db-mcp
+url: https://doi.org/10.5281/zenodo.20174426
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.20174426
+    description: Archived software release v1.0.1 on Zenodo.
+  - type: doi
+    value: 10.2139/ssrn.6763918
+    description: >-
+      Companion preprint on SSRN, Abstract ID 6763918. Preprint only; not
+      peer reviewed.
+  - type: other
+    value: hal-05622597
+    description: >-
+      Companion preprint cross-deposited on HAL. Preprint only; not peer
+      reviewed.
+keywords:
+  - Model Context Protocol
+  - MCP
+  - API gateway governance
+  - agentic AI
+  - OpenAPI
+  - JDBC
+  - relational database access
+  - reproducible research
+  - Apigee
+  - Kong Gateway
+  - Azure API Management
