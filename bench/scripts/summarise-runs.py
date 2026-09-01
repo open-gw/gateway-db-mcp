@@ -80,7 +80,7 @@ def throughput_measured(run: dict) -> float | None:
     return None
 
 
-def index_runs() -> list[dict]:
+def index_runs(*, require_phase: bool = False) -> list[dict]:
     rows = []
     for path in sorted(RUNS_DIR.glob("*.json")):
         if path.name == "index.jsonl":
@@ -89,6 +89,10 @@ def index_runs() -> list[dict]:
             data = load_run(path)
         except SystemExit:
             continue
+        if require_phase:
+            metrics = data.get("metrics") or {}
+            if any(key not in metrics for key, _ in ENDPOINTS):
+                continue
         meta = data["run_metadata"]
         rows.append({"path": path, "data": data, "meta": meta})
     return rows
@@ -232,14 +236,18 @@ def main() -> None:
     if not RUNS_DIR.is_dir():
         raise SystemExit(f"no runs directory at {RUNS_DIR}")
 
-    rows = index_runs()
+    # --latest skips pre-phase-tag archives; --run-ids still hard-refuses them
+    # so an explicit citation attempt cannot silently use contaminated series.
+    rows = index_runs(require_phase=bool(args.latest))
     if not rows:
         raise SystemExit(f"no provenance-bearing runs in {RUNS_DIR}")
 
     outputs = []
     if args.run_ids:
         a_id, b_id = args.run_ids
-        by_id = {r["meta"]["run_id"]: r for r in rows}
+        # Load all provenance runs so we can name the refused id accurately.
+        all_rows = index_runs(require_phase=False)
+        by_id = {r["meta"]["run_id"]: r for r in all_rows}
         if a_id not in by_id or b_id not in by_id:
             raise SystemExit(f"run id not found: {a_id!r} / {b_id!r}")
         ra, rb = by_id[a_id], by_id[b_id]
@@ -250,7 +258,10 @@ def main() -> None:
     elif args.latest:
         pairs = latest_pairs(rows)
         if not pairs:
-            raise SystemExit("no direct/gateway pairs found for --latest")
+            raise SystemExit(
+                "no direct/gateway pairs with {phase:main} metrics found for --latest "
+                "(re-run after the warmup-exclusion fix)"
+            )
         for d, g in pairs:
             outputs.append(render_pair(d, g, args.format, args.allow_mixed_commit))
     else:
