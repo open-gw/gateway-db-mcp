@@ -129,6 +129,7 @@ export const options = {
     // measurement. Thresholds on {phase:main} also force k6 to materialise the
     // filtered series into the summary JSON (required for Trend sub-metrics).
     'checks{phase:main}': ['rate>0.99'],
+    'iteration_duration{phase:main}': ['max<600000'],
     'ep_list_tables{phase:main}':     ['p(99)<60000'],
     'ep_describe_schema{phase:main}': ['p(99)<60000'],
     'ep_get_rows{phase:main}':        ['p(99)<60000'],
@@ -235,13 +236,34 @@ export function handleSummary(summary) {
     abortReason = `ep_list_tables{phase:main}.count=${mainCount} != ITERATIONS=${ITERATIONS}`;
   }
 
-  // Sanity: measured throughput must agree with iteration_duration within 2x.
+  // Sanity: measured throughput must agree with iteration time within 2x.
   // Catches duration contamination (harness activity overlapping the window).
   if (status === 'complete' && throughputMeasured != null) {
-    const iterVals = ((summary.metrics || {})['iteration_duration{phase:main}'] || {}).values || {};
-    const iterMedMs = iterVals.med;
+    const metrics = summary.metrics || {};
+    let iterMedMs = null;
+    const tagged = (metrics['iteration_duration{phase:main}'] || {}).values || {};
+    if (tagged.med != null) {
+      iterMedMs = tagged.med;
+    } else {
+      // Fallback when the tagged series is absent: sum of endpoint medians.
+      let sum = 0;
+      let n = 0;
+      for (const name of [
+        'ep_list_tables{phase:main}',
+        'ep_describe_schema{phase:main}',
+        'ep_get_rows{phase:main}',
+        'ep_run_query{phase:main}',
+      ]) {
+        const med = ((metrics[name] || {}).values || {}).med;
+        if (med != null) {
+          sum += med;
+          n += 1;
+        }
+      }
+      if (n === REQUESTS_PER_ITERATION) iterMedMs = sum;
+    }
     if (iterMedMs != null && iterMedMs > 0) {
-      const implied = (REQUESTS_PER_ITERATION * 1000.0) / iterMedMs;
+      const implied = (VUS * REQUESTS_PER_ITERATION * 1000.0) / iterMedMs;
       metadata.throughput_implied_by_iteration_med = implied;
       const ratio = throughputMeasured > implied
         ? throughputMeasured / implied
@@ -250,7 +272,7 @@ export function handleSummary(summary) {
         status = 'suspect';
         abortReason =
           `throughput_measured=${throughputMeasured} differs >2x from ` +
-          `iteration_duration-implied=${implied} (ratio=${ratio.toFixed(2)})`;
+          `iteration-implied=${implied} (ratio=${ratio.toFixed(2)})`;
       }
     }
   }
