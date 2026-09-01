@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: >-
   If you use this software, please cite the archived Zenodo release below.
   No peer-reviewed version of this work has been published; the companion
-  preprints listed under `identifiers` are preprints only.
+  preprint listed under `identifiers` is a preprint only.
 title: >-
   GatewayDB-MCP: A Configuration-Driven Bridge from JDBC Databases to MCP
   Tool Endpoints in Enterprise API Gateways
@@ -27,19 +27,23 @@ authors:
     email: hello@open-gw.com
     orcid: https://orcid.org/0009-0007-9082-8846
     affiliation: Independent Researcher, Alpharetta, GA, USA
-version: v1.0.1
-date-released: '2026-05-14'
-doi: 10.5281/zenodo.20174426
+version: v1.0.2
+date-released: '2026-08-31'
+doi: 10.5281/zenodo.20174425
 license: Apache-2.0
 repository-code: https://github.com/open-gw/gateway-db-mcp
-url: https://doi.org/10.5281/zenodo.20174426
+url: https://doi.org/10.5281/zenodo.20174425
 identifiers:
   - type: doi
     value: 10.5281/zenodo.20174425
-    description: Archived software release v1.0.1 on Zenodo.
+    description: >-
+      Concept DOI representing all versions of the archived software release.
+      Always resolves to the latest version.
   - type: doi
     value: 10.5281/zenodo.20174426
-    description: Archived software release v1.0.1 on Zenodo.
+    description: >-
+      Version v1.0.1 archive (superseded; contained citation metadata errors
+      corrected in v1.0.2).
   - type: doi
     value: 10.2139/ssrn.6763918
     description: >-
