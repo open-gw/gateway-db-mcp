@@ -9,6 +9,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -85,7 +86,7 @@ class OWASPValidatorTest {
                     || upper.startsWith("CREATE") || upper.startsWith("TRUNCATE")
                     || upper.startsWith("GRANT");
             })
-            .toList();
+            .collect(Collectors.toList());
 
         assertFalse(ddlPayloads.isEmpty(), "Payload file must contain DDL examples");
 

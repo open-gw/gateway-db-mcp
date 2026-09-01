@@ -12,14 +12,14 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * In-memory H2 (MySQL mode) for operation tests.
+ * In-memory H2 (MySQL mode) for operation / sidecar tests.
  * MySQL mode enables backtick quoting used by {@code GetTableRowsOperation}.
  */
-final class H2Fixture implements AutoCloseable {
+public final class H2Fixture implements AutoCloseable {
 
-    final HikariDataSource dataSource;
-    final CalloutConfig config;
-    final String catalog;
+    public final HikariDataSource dataSource;
+    public final CalloutConfig config;
+    public final String catalog;
 
     private H2Fixture(HikariDataSource dataSource, CalloutConfig config, String catalog) {
         this.dataSource = dataSource;
@@ -27,7 +27,7 @@ final class H2Fixture implements AutoCloseable {
         this.catalog = catalog;
     }
 
-    static H2Fixture create(String allowedTables, int maxRows) throws Exception {
+    public static H2Fixture create(String allowedTables, int maxRows) throws Exception {
         String catalog = "dbmcp_" + UUID.randomUUID().toString().replace("-", "");
         String url = "jdbc:h2:mem:" + catalog
                 + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";

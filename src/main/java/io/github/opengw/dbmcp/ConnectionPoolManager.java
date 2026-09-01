@@ -27,6 +27,19 @@ public class ConnectionPoolManager {
         return POOLS.computeIfAbsent(config.poolKey(), k -> createPool(config));
     }
 
+    /** Closes every pool. Used by the sidecar JVM shutdown hook. */
+    public static void shutdown() {
+        for (HikariDataSource ds : POOLS.values()) {
+            try {
+                ds.close();
+            } catch (Exception e) {
+                LOGGER.warning("[gateway-db-mcp] Error closing pool: " + e.getMessage());
+            }
+        }
+        POOLS.clear();
+        LOGGER.info("[gateway-db-mcp] All connection pools closed");
+    }
+
     private static HikariDataSource createPool(CalloutConfig c) {
         LOGGER.info("[gateway-db-mcp] Creating pool — " + c.poolKey());
 

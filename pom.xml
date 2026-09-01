@@ -30,8 +30,7 @@
   </organization>
 
   <properties>
-    <maven.compiler.source>11</maven.compiler.source>
-    <maven.compiler.target>11</maven.compiler.target>
+    <maven.compiler.release>11</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <hikari.version>5.0.1</hikari.version>
     <jackson.version>2.15.2</jackson.version>
@@ -46,19 +45,9 @@
 
   <dependencies>
 
-    <!-- ===== Apigee Callout APIs (provided — present in Apigee runtime) ===== -->
-    <dependency>
-      <groupId>com.apigee.edge</groupId>
-      <artifactId>expressions</artifactId>
-      <version>1.0.0</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>com.apigee.edge</groupId>
-      <artifactId>message-flow</artifactId>
-      <version>1.0.0</version>
-      <scope>provided</scope>
-    </dependency>
+    <!-- Apigee Callout APIs: stubbed under src/main/java/com/apigee/... so the
+         sidecar fat JAR is runnable with java -jar. On Apigee X, parent-first
+         classloading supplies the platform implementations instead. -->
 
     <!-- ===== Connection Pooling ===== -->
     <dependency>
@@ -141,6 +130,12 @@
             <goals><goal>shade</goal></goals>
             <configuration>
               <createDependencyReducedPom>false</createDependencyReducedPom>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>io.github.opengw.dbmcp.server.SidecarServer</mainClass>
+                </transformer>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+              </transformers>
               <filters>
                 <filter>
                   <artifact>*:*</artifact>
@@ -184,6 +179,15 @@
             </configuration>
           </execution>
         </executions>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <release>11</release>
+        </configuration>
       </plugin>
 
       <plugin>

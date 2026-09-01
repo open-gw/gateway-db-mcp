@@ -21,12 +21,6 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - name: Install Apigee stub JARs
-        # provided-scope APIs are not on Maven Central — compile real interface stubs
-        run: |
-          chmod +x scripts/install-apigee-stubs.sh
-          ./scripts/install-apigee-stubs.sh
-
       - name: Build
         run: mvn compile --no-transfer-progress
 
@@ -36,13 +30,17 @@ jobs:
       - name: Package shaded JAR
         run: mvn package -DskipTests --no-transfer-progress
 
-      - name: Verify shaded JAR contains DBMCPCallout
+      - name: Verify shaded JAR (callout + Main-Class)
         run: |
           JAR=$(ls target/gateway-db-mcp-*.jar | head -n1)
           echo "Checking: $JAR"
           jar tf "$JAR" | grep -q "io/github/opengw/dbmcp/DBMCPCallout.class" \
             || { echo "JAR missing DBMCPCallout.class"; exit 1; }
-          echo "OK: DBMCPCallout.class present in shaded JAR"
+          jar tf "$JAR" | grep -q "io/github/opengw/dbmcp/server/SidecarServer.class" \
+            || { echo "JAR missing SidecarServer.class"; exit 1; }
+          unzip -p "$JAR" META-INF/MANIFEST.MF | grep -q "Main-Class: io.github.opengw.dbmcp.server.SidecarServer" \
+            || { echo "MANIFEST missing Main-Class SidecarServer"; exit 1; }
+          echo "OK: DBMCPCallout + SidecarServer Main-Class present"
 
       - name: Upload test results
         if: always()
@@ -57,7 +55,7 @@ jobs:
           name: gateway-db-mcp-jar
           path: target/gateway-db-mcp-*.jar
 
-  # Keep packaging on main for convenience; stubs must be installed first.
+  # Keep packaging on main for convenience.
   release:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: build-and-test
@@ -69,17 +67,15 @@ jobs:
           java-version: '11'
           distribution: 'temurin'
           cache: maven
-      - name: Install Apigee stub JARs
-        run: |
-          chmod +x scripts/install-apigee-stubs.sh
-          ./scripts/install-apigee-stubs.sh
       - name: Package shaded JAR
         run: mvn package -DskipTests --no-transfer-progress
-      - name: Verify shaded JAR contains DBMCPCallout
+      - name: Verify shaded JAR (callout + Main-Class)
         run: |
           JAR=$(ls target/gateway-db-mcp-*.jar | head -n1)
           jar tf "$JAR" | grep -q "io/github/opengw/dbmcp/DBMCPCallout.class" \
             || { echo "JAR missing DBMCPCallout.class"; exit 1; }
+          unzip -p "$JAR" META-INF/MANIFEST.MF | grep -q "Main-Class: io.github.opengw.dbmcp.server.SidecarServer" \
+            || { echo "MANIFEST missing Main-Class SidecarServer"; exit 1; }
       - name: Upload JAR artifact
         uses: actions/upload-artifact@v4
         with:
