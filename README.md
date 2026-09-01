@@ -4,7 +4,8 @@
 [![Java 11+](https://img.shields.io/badge/Java-11%2B-orange.svg)](https://openjdk.org/)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.open-gw/gateway-db-mcp.svg)](https://search.maven.org/artifact/io.github.open-gw/gateway-db-mcp)
 [![Build](https://github.com/open-gw/gateway-db-mcp/actions/workflows/build.yml/badge.svg)](https://github.com/open-gw/gateway-db-mcp/actions)
-[![Paper](https://img.shields.io/badge/IEEE%20Paper-ICSA%202026-blue)](https://doi.org/10.5281/zenodo.xxxxxxx)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20174426.svg)](https://doi.org/10.5281/zenodo.20174426)
+[![Preprint](https://img.shields.io/badge/Preprint-SSRN%206763918-blue)](https://ssrn.com/abstract=6763918)
 
 **Config-driven JDBC database bridge for enterprise API gateway MCP proxies — Apigee X, Kong, Azure APIM. Zero custom code.**
 
@@ -18,7 +19,7 @@ AI Agent  →MCP→  [Apigee X / Kong / Azure APIM]  →HTTP→  [gateway-db-mcp
 
 Standalone MCP servers ([FreePeak/db-mcp-server](https://github.com/FreePeak/db-mcp-server) and others) connect AI agents directly to databases. For development workflows and local tooling, that is the right choice.
 
-For regulated enterprise environments — healthcare, finance, government — AI agent database access must flow through the same API gateway governance layer that governs every other integration: OAuth 2.1 auth, per-agent rate limiting, immutable audit logs, and table-level access control. No existing solution does this. **gateway-db-mcp bridges that gap.**
+For regulated enterprise environments — healthcare, finance, government — AI agent database access must flow through the same API gateway governance layer that governs every other integration: OAuth 2.1 auth, per-agent rate limiting, immutable audit logs, and table-level access control. Existing database-to-MCP tools ship their own policy plane, which must then be separately configured, audited, and certified for each regulated deployment. **gateway-db-mcp takes the opposite approach: it ships no policy plane at all.** It emits an MCP-annotated OpenAPI specification consumed by a gateway whose controls are already in production and already certified.
 
 Drop a JAR into an Apigee X proxy (or run a Docker sidecar for Kong/APIM), configure your database connection in XML, and your database is an MCP-governed tool endpoint in minutes.
 
@@ -174,17 +175,32 @@ All properties are set in `JC-DBBridge.xml` `<Properties>` (embedded mode) or en
 
 ## Security model
 
-Security is enforced in two independent layers. **Layer 1 is mandatory.**
+Security is enforced in five independent layers. **Layer 1 is mandatory and cannot be bypassed by failure at any other layer.**
 
 | Layer | Control | Where enforced | Bypass risk |
 |---|---|---|---|
 | **1 — DB credential** | Read-only database user | Database server | None (DB enforces) |
 | **2 — Gateway auth** | OAuth 2.1 token validation | Gateway | Token theft |
-| **3 — Allowlist** | `allowedTables` in JDBC `getTables()` | Bridge | None |
-| **4 — SQL validator** | Heuristic DDL/write/injection blocking | Bridge | 13% OWASP bypass (Layer 1 covers residual) |
+| **3 — Allowlist** | `allowedTables` filter at JDBC `getTables()` | Bridge | Discovery filter only; **not** enforced against the SQL target in `POST /query` |
+| **4 — SQL validator** | Heuristic DDL/write/injection blocking | Bridge | 6 of 47 OWASP payloads bypass; Layer 1 preserves write integrity, confidentiality exposure remains |
 | **5 — Resource caps** | `maxRows` + `queryTimeout` | Bridge | None |
 
-> **Critical:** Layer 4 blocked 41/47 (87%) OWASP SQL injection payloads in testing. The remaining 13% were stopped by Layer 1 (read-only DB credential). You **must** provision a read-only database user. The SQL validator is a defence-in-depth layer, not a standalone security guarantee.
+> **Critical — read this before deploying against sensitive data.**
+> Layer 4 blocked 41 of 47 (87%) OWASP SQL injection payloads in the regression suite. The six
+> residual payloads are documented at `src/test/resources/owasp-sqli.txt` and marked `[BYPASS-L4]`.
+>
+> **Layer 1 is an integrity control, not a confidentiality control.** All six residual payloads
+> issue read-only `SELECT` operations, so the mandatory read-only database credential prevents
+> every one of them from modifying database state. It does not prevent them from reading data.
+> Because `allowedTables` is applied as a discovery filter at `getTables()` and is not enforced
+> against the SQL target in `POST /query`, a payload that defeats the Layer 4 heuristic and issues
+> a crafted `SELECT` against a non-listed table will execute and return rows.
+>
+> You **must** provision a read-only database user. The SQL validator is a defence-in-depth layer,
+> not a standalone security guarantee. Until the v2.0 Apache Calcite AST validator lands, treat
+> `POST /query` as unsuitable for deployments where confidentiality of non-allowlisted tables is a
+> requirement. The discovery endpoints (`/tables`, `/tables/{t}/schema`, `/tables/{t}/rows`) are
+> not affected by this gap.
 
 ### What the validator blocks (unconditionally)
 
@@ -207,7 +223,25 @@ SELECT * FROM users UNION SELECT * FROM passwords  (UNION injection)
 
 ### Known limitations
 
-The validator uses regex-based heuristics (not a full SQL AST parser). Known bypass vectors include MySQL conditional comments (`/*!50000 SELECT */`), Unicode normalization on keyword spelling, and database-specific syntax not in the denylist. **Mitigation: always use a read-only database user (Layer 1).** An Apache Calcite AST-based validator is planned for v2.0 (see [Roadmap](#roadmap)).
+The validator uses regex-based heuristics, not a full SQL AST parser. Six payloads in the 47-payload
+OWASP regression suite defeat it. They are checked into the repository as expected failures marked
+`[BYPASS-L4]` at `src/test/resources/owasp-sqli.txt`, in five categories:
+
+| Category | Count | Example |
+|---|---|---|
+| MySQL conditional comments | 2 | `/*!50000 SELECT */` |
+| Inline-comment keyword split | 1 | `SEL/**/ECT` |
+| Percent-encoded keyword decoded upstream of the bridge | 1 | `%53ELECT` |
+| Vendor-specific `HANDLER` statement | 1 | `HANDLER tbl OPEN` |
+| MySQL file-read function | 1 | `LOAD_FILE()` |
+
+This is a regression suite against one published payload set. It is **not** a penetration test and
+makes no claim of completeness against SQL injection in general. Database-specific syntax outside
+the denylist should be assumed to bypass the heuristic.
+
+**Mitigation: always use a read-only database user (Layer 1),** and see the confidentiality caveat
+above. An Apache Calcite AST-based validator that resolves query targets against the `allowedTables`
+policy is planned for v2.0 (see [Roadmap](#roadmap)).
 
 ---
 
@@ -219,7 +253,7 @@ The validator uses regex-based heuristics (not a full SQL AST parser). Known byp
 | PostgreSQL 14+ | `org.postgresql.Driver` | 5432 | |
 | SQL Server 2019+ | `com.microsoft.sqlserver.jdbc.SQLServerDriver` | 1433 | TLS required |
 
-Adding a new database requires one line in `pom.xml` (JDBC driver dependency) and one `case` in `CalloutConfig.driverClassName()` and `jdbcUrl()`. Oracle DB2, and MariaDB support is straightforward; Oracle's OJDBC JAR has license restrictions preventing bundling — install instructions are in the [Contributing guide](CONTRIBUTING.md).
+Adding a new database requires one line in `pom.xml` (JDBC driver dependency) and one `case` in `CalloutConfig.driverClassName()` and `jdbcUrl()`. Oracle, DB2, and MariaDB support is straightforward; Oracle's OJDBC JAR has license restrictions preventing bundling — install instructions are in the [Contributing guide](CONTRIBUTING.md).
 
 ---
 
@@ -296,20 +330,20 @@ API Hub (Apigee) or Kong Konnect's service catalog serves as the enterprise MCP 
 
 ## Performance
 
-Measured on Cloud SQL MySQL 8.0 (`db-n1-standard-4`) with the bridge on Cloud Run (2 vCPU / 4 GB), GCP `us-east1`, Apache JMeter 5.6, 1,000 iterations post-warmup.
+**No load-test results are published for this release.** A benchmark harness and measured
+latency figures are planned; until they are available, do not use this project for capacity
+planning without running load tests against your own deployment configuration.
 
-| Operation | C=10 p50 | C=10 p95 | C=10 p99 |
-|---|---|---|---|
-| `GET /tables` | 11 ms | 24 ms | 38 ms |
-| `GET /tables/{t}/schema` | 28 ms | 47 ms | 71 ms |
-| `GET /tables/{t}/rows` (100 rows) | 52 ms | 94 ms | 141 ms |
-| `POST /query` (50 rows) | 43 ms | 81 ms | 128 ms |
-| `GET /openapi` (8 tables) | 218 ms | 341 ms | 487 ms |
-| **End-to-end MCP** (Apigee embedded, 50 rows) | **90 ms** | **132 ms** | **166 ms** |
+Two structural properties are worth knowing when you design that test:
 
-The SQL validator adds < 1.4 ms overhead at p99 for any input up to the 10,000-character limit.
+- `GET /openapi` performs `O(1 + 2n)` JDBC metadata queries, where `n` is the number of allowed
+  tables, so its cost scales with allowlist size. It is called once when the gateway MCP proxy is
+  configured, not on every MCP request, so it is not on the hot path.
+- The remaining four endpoints issue a single JDBC round trip each against a HikariCP-pooled
+  connection. End-to-end latency is dominated by gateway policy execution and database round-trip
+  time, both of which are properties of your environment rather than of this bridge.
 
-> `/openapi` is called once during gateway MCP proxy configuration, not on every MCP request.
+Contributions of a reproducible benchmark harness are welcome. See [Contributing](CONTRIBUTING.md).
 
 ---
 
@@ -319,7 +353,13 @@ The SQL validator adds < 1.4 ms overhead at p99 for any input up to the 10,000-c
 
 - `security.allowedTables` limits accessible tables to the minimum necessary set.
 - OTEL audit logs via `ML-OTELLog.xml` provide the access log trail HIPAA requires (configure 6-year retention in Cloud Logging).
-- **Gap:** Column-level access control (excluding individual PHI columns within accessible tables) is not yet implemented. Do not expose tables containing unrestricted PHI until v2.0 column-level ACL is available.
+- **Gap 1 — column-level access:** Column-level access control (excluding individual PHI columns
+  within accessible tables) is not yet implemented. Do not expose tables containing unrestricted
+  PHI until v2.0 column-level ACL is available.
+- **Gap 2 — `POST /query` confidentiality:** `allowedTables` is not enforced against the SQL target
+  in `POST /query` (see [Security model](#security-model)). Until the v2.0 AST validator lands,
+  either disable `POST /query` at the gateway for PHI-bearing deployments or restrict the database
+  credential's own grants to the allowlisted tables so the database enforces the boundary.
 - Business associate agreements are required for any AI platform (Claude, Azure OpenAI) processing PHI — this is outside the scope of this library.
 
 ### GDPR
@@ -346,13 +386,12 @@ Set on every response and available to downstream policies:
 
 | Version | Feature | Status |
 |---|---|---|
-| v1.0 | Core JDBC bridge + Apigee X embedded mode | ✅ Released |
-| v1.1 | Sidecar Docker image + Kong/APIM guides | ✅ Released |
+| v1.0.1 | Core JDBC bridge, Apigee X embedded mode, Docker sidecar, Kong/APIM guides | ✅ Released ([Zenodo](https://doi.org/10.5281/zenodo.20174426)) |
 | v2.0 | Apache Calcite AST-based SQL validator | 🔄 In progress (`/dev/calcite-validator`) |
-| v2.0 | Column-level access control for PHI exclusion | 📋 Planned Q3 2026 |
+| v2.0 | Column-level access control for PHI exclusion | 📋 Planned |
 | v2.1 | Google Secret Manager native credential resolution | 📋 Planned |
 | v2.2 | Schema change webhook → auto `/openapi` refresh | 📋 Planned |
-| v3.0 | Oracle DB2 MariaDB driver bundles | 📋 Planned |
+| v3.0 | Oracle, DB2, and MariaDB driver bundles | 📋 Planned |
 
 ---
 
@@ -370,7 +409,6 @@ gateway-db-mcp/
 │   ├── CalloutConfig.java           Property map → typed validated config
 │   ├── ConnectionPoolManager.java   HikariCP singleton keyed by config hash
 │   ├── OperationRouter.java         HTTP method + path → operation handler
-│   ├── OperationRouter.java         Interfaces, result types, exceptions
 │   ├── security/
 │   │   └── QueryValidator.java      Heuristic SQL security (DDL block, injection)
 │   └── operations/
@@ -459,7 +497,7 @@ All PRs require the H2 test suite to pass. For new database support, add corresp
 
 ## Citing this work
 
-If you use gateway-db-mcp in research, please cite:
+If you use gateway-db-mcp in research, please cite the archived software release:
 
 ```bibtex
 @software{dhanaraj2026gatewaydbmcp,
@@ -468,14 +506,19 @@ If you use gateway-db-mcp in research, please cite:
                to {MCP} Tool Endpoints in Enterprise {API} Gateways},
   year      = {2026},
   publisher = {Zenodo},
-  version   = {v1.0.0},
+  version   = {v1.0.1},
   doi       = {10.5281/zenodo.20174426},
   url       = {https://doi.org/10.5281/zenodo.20174426}
 }
 ```
-A companion paper is available as a preprint on SSRN (Abstract ID 6763918): https://ssrn.com/abstract=6763918
 
-The paper has been submitted for peer review. Citation details will be updated on acceptance.
+A companion preprint is available on SSRN (Abstract ID 6763918, DOI 10.2139/ssrn.6763918):
+<https://ssrn.com/abstract=6763918>. The same preprint is cross-deposited on HAL as `hal-05622597`.
+
+**No peer-reviewed version of this work has been published.** Please cite the Zenodo archive above.
+If a peer-reviewed version is published in future, this section will be updated and the preferred
+citation changed accordingly.
+
 ---
 
 ## License
