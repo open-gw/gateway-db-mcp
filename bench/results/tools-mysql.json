@@ -1,0 +1,9 @@
+[
+  "describe_customers_schema",
+  "describe_orders_schema",
+  "describe_products_schema",
+  "get_customers_rows",
+  "get_orders_rows",
+  "get_products_rows",
+  "run_query"
+]
