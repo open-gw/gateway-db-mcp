@@ -30,13 +30,14 @@ services:
   # Databases
   # ─────────────────────────────────────────────────────────────────────────
 
+  # MYSQL_USER is intentionally omitted. The official entrypoint GRANTs ALL to
+  # MYSQL_USER after (or around) init scripts, which defeated SELECT-only. Create
+  # readonly_user inside init-*.sql instead — same pattern as postgres below.
   mysql-a:
     image: mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: rootpassword
       MYSQL_DATABASE: testdb
-      MYSQL_USER: readonly_user
-      MYSQL_PASSWORD: readonlypassword
     volumes:
       - ./db/init-mysql-a.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
@@ -51,8 +52,6 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: rootpassword
       MYSQL_DATABASE: testdb
-      MYSQL_USER: readonly_user
-      MYSQL_PASSWORD: readonlypassword
     volumes:
       - ./db/init-mysql-b.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
@@ -61,16 +60,18 @@ services:
       timeout: 5s
       retries: 20
 
+  # POSTGRES_USER is the superuser (postgres), not the app credential. readonly_user
+  # is created SELECT-only in init-postgres.sql (mirrors MySQL Layer 1).
   postgres:
     image: postgres:16
     environment:
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: rootpassword
       POSTGRES_DB: testdb
-      POSTGRES_USER: readonly_user
     volumes:
       - ./db/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U readonly_user -d testdb"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d testdb"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -123,7 +124,7 @@ services:
       DB_PORT: "5432"
       DB_DATABASE: testdb
       DB_USERNAME: readonly_user
-      DB_PASSWORD: rootpassword
+      DB_PASSWORD: readonlypassword
     ports:
       - "8083:8080"
     depends_on:

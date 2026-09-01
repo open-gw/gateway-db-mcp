@@ -37,6 +37,16 @@ public final class SidecarServer {
 
     private static final Logger LOGGER = Logger.getLogger(SidecarServer.class.getName());
 
+    static {
+        // JDK HttpServer flushes response headers before the body write
+        // (ExchangeImpl.sendResponseHeaders → tmpout.flush). Content-Length
+        // prevents chunked zero-length trailers; this socket option prevents
+        // Nagle from delaying that second small segment behind a delayed ACK
+        // (~40 ms on Linux). Must be set before ServerConfig is class-loaded.
+        // Not a kernel sysctl — the JDK-documented sun.net.httpserver.nodelay.
+        System.setProperty("sun.net.httpserver.nodelay", "true");
+    }
+
     private final CalloutConfig config;
     private final DataSource dataSource;
     private final int port;
@@ -218,9 +228,27 @@ public final class SidecarServer {
         }
     }
 
+    /**
+     * Serialise the body first, then send with an explicit content length and a
+     * single write. Passing {@code 0} to {@link HttpExchange#sendResponseHeaders}
+     * enables chunked transfer encoding; the terminating zero-length chunk is a
+     * separate small TCP segment that stalls ~40 ms behind a delayed ACK on Linux.
+     *
+     * <p>JDK {@code HttpServer} also flushes headers before the body write. Set
+     * {@code sun.net.httpserver.nodelay=true} before the server starts (see
+     * {@link #start()}) so Nagle cannot hold that second segment.
+     */
     private static void writeJson(HttpExchange exchange, int status, String body) throws IOException {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = body == null ? new byte[0] : body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
+        // Explicit header + length argument (must be > 0 for a body; 0 means chunked).
+        exchange.getResponseHeaders().set("Content-Length", Integer.toString(bytes.length));
+        if (bytes.length == 0) {
+            // No body: negative length means "headers only" in HttpServer (not chunked).
+            exchange.sendResponseHeaders(status, -1);
+            exchange.getResponseBody().close();
+            return;
+        }
         exchange.sendResponseHeaders(status, bytes.length);
         try (OutputStream out = exchange.getResponseBody()) {
             out.write(bytes);
