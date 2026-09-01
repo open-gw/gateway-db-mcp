@@ -7,12 +7,16 @@ under results/runs/ with a run_metadata provenance block.
 Reads ep_*{phase:main} series only — unfiltered ep_* include warmup samples and
 must not be cited. Runs that predate phase tagging are refused, not silently
 re-parsed.
+
+Three-arm decomposition (when available):
+  Δ proxy  = passthrough − direct   (Kong hop, no plugins)
+  Δ policy = gateway − passthrough  (governance plugins)  ← paper claim
+  Δ total  = gateway − direct
 """
 from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 RUNS_DIR = Path(__file__).resolve().parent.parent / "results" / "runs"
@@ -24,6 +28,13 @@ ENDPOINTS = [
     ("ep_get_rows{phase:main}", "get_rows"),
     ("ep_run_query{phase:main}", "run_query"),
 ]
+
+ARMS = ("direct", "passthrough", "gateway")
+ARM_LABEL = {
+    "direct": "direct",
+    "passthrough": "passthrough",
+    "gateway": "governed",
+}
 
 
 def load_run(path: Path) -> dict:
@@ -98,8 +109,12 @@ def index_runs(*, require_phase: bool = False) -> list[dict]:
     return rows
 
 
-def latest_pairs(rows: list[dict]) -> list[tuple[dict, dict]]:
-    """Newest direct/gateway pair per VU level (same iterations preferred)."""
+def latest_by_arm(rows: list[dict]) -> list[dict[str, dict]]:
+    """Newest run per (target, vu) for the latest shared iteration count per VU.
+
+    Returns a list of arm maps keyed by target name, one entry per VU level.
+    Missing arms are omitted from the map (caller reports which are absent).
+    """
     by_key: dict[tuple, dict] = {}
     for row in rows:
         m = row["meta"]
@@ -108,17 +123,27 @@ def latest_pairs(rows: list[dict]) -> list[tuple[dict, dict]]:
         if prev is None or m["timestamp_utc"] > prev["meta"]["timestamp_utc"]:
             by_key[key] = row
 
-    pairs = []
     vu_levels = sorted({r["meta"]["vus"] for r in by_key.values()})
+    groups: list[dict[str, dict]] = []
     for vu in vu_levels:
-        directs = [r for (t, v, _), r in by_key.items() if t == "direct" and v == vu]
-        gateways = [r for (t, v, _), r in by_key.items() if t == "gateway" and v == vu]
-        if not directs or not gateways:
-            continue
-        d = max(directs, key=lambda r: r["meta"]["timestamp_utc"])
-        g = max(gateways, key=lambda r: r["meta"]["timestamp_utc"])
-        pairs.append((d, g))
-    return pairs
+        # Prefer the iteration count that has the most arms present.
+        iter_counts = sorted({
+            it for (t, v, it) in by_key if v == vu
+        }, reverse=True)
+        best: dict[str, dict] = {}
+        best_n = -1
+        for it in iter_counts:
+            arms = {
+                t: by_key[(t, vu, it)]
+                for t in ARMS
+                if (t, vu, it) in by_key
+            }
+            if len(arms) > best_n:
+                best = arms
+                best_n = len(arms)
+        if best:
+            groups.append(best)
+    return groups
 
 
 def fmt(n: float | None, digits: int = 2) -> str:
@@ -133,102 +158,176 @@ def delta(a: float | None, b: float | None) -> str:
     return fmt(b - a)
 
 
-def pct_cost(direct: float | None, gateway: float | None) -> str:
-    if direct is None or gateway is None or direct == 0:
+def pct_delta(baseline: float | None, other: float | None) -> str:
+    """Percent change of other relative to baseline (throughput cost style)."""
+    if baseline is None or other is None or baseline == 0:
         return "—"
-    return f"{((gateway - direct) / direct) * 100:.1f}%"
+    return f"{((other - baseline) / baseline) * 100:.1f}%"
 
 
-def render_pair(d: dict, g: dict, fmt_kind: str, allow_mixed: bool) -> str:
-    require_phase_main(d["data"], str(d["path"]))
-    require_phase_main(g["data"], str(g["path"]))
-
-    md = d["meta"]
-    mg = g["meta"]
-    if md["git_commit"] != mg["git_commit"] and not allow_mixed:
+def check_commits(arms: dict[str, dict], allow_mixed: bool) -> str:
+    commits = {a["meta"]["git_commit"] for a in arms.values()}
+    if len(commits) <= 1:
+        return ""
+    detail = "\n".join(
+        f"  {t}={arms[t]['meta']['run_id']} commit={arms[t]['meta']['git_commit']}"
+        for t in ARMS if t in arms
+    )
+    if not allow_mixed:
         raise SystemExit(
-            f"REFUSE: comparing different git commits\n"
-            f"  direct={md['run_id']} commit={md['git_commit']}\n"
-            f"  gateway={mg['run_id']} commit={mg['git_commit']}\n"
+            f"REFUSE: comparing different git commits\n{detail}\n"
             f"Pass --allow-mixed-commit to override (not for paper figures)."
         )
-    warn = ""
-    if md["git_commit"] != mg["git_commit"] and allow_mixed:
-        warn = (
-            "WARNING: MIXED GIT COMMITS — delta is not attributable to the gateway alone.\n"
-            f"  direct commit={md['git_commit']}\n"
-            f"  gateway commit={mg['git_commit']}\n\n"
-        )
+    return (
+        "WARNING: MIXED GIT COMMITS — deltas are not attributable to mediation alone.\n"
+        f"{detail}\n\n"
+    )
 
-    lines = []
+
+def ep_percentiles(run: dict | None, metric_key: str) -> tuple[float | None, float | None, float | None]:
+    if run is None:
+        return None, None, None
+    m = (run["data"].get("metrics") or {}).get(metric_key) or {}
+    return percentile(m, "med"), percentile(m, "p(95)"), percentile(m, "p(99)")
+
+
+def render_group(arms: dict[str, dict], fmt_kind: str, allow_mixed: bool) -> str:
+    for row in arms.values():
+        require_phase_main(row["data"], str(row["path"]))
+
+    warn = check_commits(arms, allow_mixed)
+    lines: list[str] = []
     if warn:
         lines.append(warn.rstrip())
 
-    title = f"VU={md['vus']} iterations={md['iterations']}"
-    headers = ["endpoint", "direct p50", "direct p95", "direct p99",
-               "gateway p50", "gateway p95", "gateway p99",
-               "Δp50", "Δp95", "Δp99"]
-    rows = []
-    for metric_key, label in ENDPOINTS:
-        dm = (d["data"].get("metrics") or {}).get(metric_key) or {}
-        gm = (g["data"].get("metrics") or {}).get(metric_key) or {}
-        dp50, dp95, dp99 = percentile(dm, "med"), percentile(dm, "p(95)"), percentile(dm, "p(99)")
-        gp50, gp95, gp99 = percentile(gm, "med"), percentile(gm, "p(95)"), percentile(gm, "p(99)")
-        rows.append([
-            label,
-            fmt(dp50), fmt(dp95), fmt(dp99),
-            fmt(gp50), fmt(gp95), fmt(gp99),
-            delta(dp50, gp50), delta(dp95, gp95), delta(dp99, gp99),
-        ])
+    sample = next(iter(arms.values()))
+    vu = sample["meta"]["vus"]
+    iterations = sample["meta"]["iterations"]
+    title = f"VU={vu} iterations={iterations}"
 
-    d_meas, g_meas = throughput_measured(d["data"]), throughput_measured(g["data"])
-    d_wall, g_wall = throughput_wall(d["data"]), throughput_wall(g["data"])
+    missing = [ARM_LABEL[t] for t in ARMS if t not in arms]
+    if missing:
+        lines.append(f"NOTE: missing arm(s): {', '.join(missing)}. Showing available columns only.")
+
+    # One table per percentile so the three-arm + three-delta layout stays readable.
+    for pct_key, pct_label in (("med", "p50"), ("p(95)", "p95"), ("p(99)", "p99")):
+        headers = [
+            "endpoint",
+            "direct", "passthrough", "governed",
+            "Δ proxy", "Δ policy", "Δ total",
+        ]
+        rows = []
+        for metric_key, label in ENDPOINTS:
+            vals = {}
+            for t in ARMS:
+                if t not in arms:
+                    vals[t] = None
+                    continue
+                m = (arms[t]["data"].get("metrics") or {}).get(metric_key) or {}
+                vals[t] = percentile(m, pct_key)
+            d, p, g = vals.get("direct"), vals.get("passthrough"), vals.get("gateway")
+            rows.append([
+                label,
+                fmt(d), fmt(p), fmt(g),
+                delta(d, p),   # proxy
+                delta(p, g),   # policy
+                delta(d, g),   # total
+            ])
+
+        if fmt_kind == "markdown":
+            lines.append(f"### {title} — latency {pct_label} (ms)")
+            lines.append("| " + " | ".join(headers) + " |")
+            lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+            for r in rows:
+                lines.append("| " + " | ".join(r) + " |")
+            lines.append("")
+        else:
+            lines.append(f"{title} latency {pct_label}")
+            lines.append("\t".join(headers))
+            for r in rows:
+                lines.append("\t".join(r))
+            lines.append("")
+
+    # Throughput decomposition
+    thr = {t: throughput_measured(arms[t]["data"]) if t in arms else None for t in ARMS}
+    thr_wall = {t: throughput_wall(arms[t]["data"]) if t in arms else None for t in ARMS}
+    d_t, p_t, g_t = thr["direct"], thr["passthrough"], thr["gateway"]
 
     if fmt_kind == "markdown":
-        lines.append(f"### {title}")
-        lines.append("| " + " | ".join(headers) + " |")
-        lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
-        for r in rows:
-            lines.append("| " + " | ".join(r) + " |")
+        lines.append(
+            f"**throughput_measured** (main phase, req/s): "
+            f"direct {fmt(d_t, 1)}, passthrough {fmt(p_t, 1)}, governed {fmt(g_t, 1)}.  "
+            f"Δ proxy cost {pct_delta(d_t, p_t)}, "
+            f"Δ policy cost {pct_delta(p_t, g_t)}, "
+            f"Δ total cost {pct_delta(d_t, g_t)}."
+        )
+        lines.append(
+            f"throughput_wall (reference only): "
+            f"direct {fmt(thr_wall['direct'], 1)}, "
+            f"passthrough {fmt(thr_wall['passthrough'], 1)}, "
+            f"governed {fmt(thr_wall['gateway'], 1)}."
+        )
         lines.append("")
         lines.append(
-            f"**throughput_measured** (main phase only): "
-            f"direct {fmt(d_meas, 1)} req/s, gateway {fmt(g_meas, 1)} req/s, "
-            f"gateway cost {pct_cost(d_meas, g_meas)}."
-        )
-        lines.append(
-            f"throughput_wall (k6 http_reqs.rate over full test window, reference only): "
-            f"direct {fmt(d_wall, 1)} req/s, gateway {fmt(g_wall, 1)} req/s."
+            "Δ proxy = passthrough − direct (Kong hop). "
+            "Δ policy = governed − passthrough (jwt + rate-limit + otel). "
+            "Δ total = governed − direct. "
+            "Lead with Δ policy."
         )
     else:
-        lines.append(title)
-        lines.append("\t".join(headers))
-        for r in rows:
-            lines.append("\t".join(r))
         lines.append(
-            f"throughput_measured\tdirect={fmt(d_meas, 1)} rps\tgateway={fmt(g_meas, 1)} rps\t"
-            f"cost={pct_cost(d_meas, g_meas)}"
+            f"throughput_measured\tdirect={fmt(d_t, 1)}\tpassthrough={fmt(p_t, 1)}\t"
+            f"governed={fmt(g_t, 1)}\t"
+            f"proxy_cost={pct_delta(d_t, p_t)}\tpolicy_cost={pct_delta(p_t, g_t)}\t"
+            f"total_cost={pct_delta(d_t, g_t)}"
         )
         lines.append(
-            f"throughput_wall\tdirect={fmt(d_wall, 1)} rps\tgateway={fmt(g_wall, 1)} rps\t"
-            f"(reference only)"
+            f"throughput_wall\tdirect={fmt(thr_wall['direct'], 1)}\t"
+            f"passthrough={fmt(thr_wall['passthrough'], 1)}\t"
+            f"governed={fmt(thr_wall['gateway'], 1)}\t(reference only)"
         )
 
-    lines.append("")
-    lines.append(
-        f"Provenance: direct={md['run_id']} gateway={mg['run_id']} "
-        f"git={md['git_commit'][:12]} host={md['host'].get('cpu_model', '?')} "
-        f"({md['host'].get('os', '?')})"
+    # Provenance
+    ids = " ".join(
+        f"{ARM_LABEL[t]}={arms[t]['meta']['run_id']}" for t in ARMS if t in arms
     )
-    if md.get("notes") or mg.get("notes"):
-        lines.append(f"Notes: direct={md.get('notes')!r} gateway={mg.get('notes')!r}")
+    commit = sample["meta"]["git_commit"][:12]
+    host = sample["meta"]["host"].get("cpu_model", "?")
+    os_name = sample["meta"]["host"].get("os", "?")
+    lines.append("")
+    lines.append(f"Provenance: {ids} git={commit} host={host} ({os_name})")
+    notes = [
+        f"{ARM_LABEL[t]}={arms[t]['meta'].get('notes')!r}"
+        for t in ARMS if t in arms and arms[t]["meta"].get("notes")
+    ]
+    if notes:
+        lines.append("Notes: " + " ".join(notes))
     return "\n".join(lines)
+
+
+def render_pair_legacy(d: dict, g: dict, fmt_kind: str, allow_mixed: bool) -> str:
+    """Two-arm --run-ids path retained for ad-hoc comparisons."""
+    return render_group(
+        {"direct": d, "gateway": g} if d["meta"]["target"] == "direct"
+        else {d["meta"]["target"]: d, g["meta"]["target"]: g},
+        fmt_kind,
+        allow_mixed,
+    )
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--latest", action="store_true", help="newest direct/gateway pair per VU")
-    ap.add_argument("--run-ids", nargs=2, metavar=("A", "B"), help="compare two run ids")
+    ap.add_argument(
+        "--latest",
+        action="store_true",
+        help="newest arms per VU (direct / passthrough / gateway when present)",
+    )
+    ap.add_argument(
+        "--run-ids",
+        nargs="+",
+        metavar="ID",
+        help="compare 2 or 3 run ids (any of direct/passthrough/gateway)",
+    )
     ap.add_argument("--format", choices=["text", "markdown"], default="text")
     ap.add_argument("--allow-mixed-commit", action="store_true")
     args = ap.parse_args()
@@ -244,26 +343,31 @@ def main() -> None:
 
     outputs = []
     if args.run_ids:
-        a_id, b_id = args.run_ids
-        # Load all provenance runs so we can name the refused id accurately.
+        if len(args.run_ids) < 2 or len(args.run_ids) > 3:
+            raise SystemExit("--run-ids expects 2 or 3 run ids")
         all_rows = index_runs(require_phase=False)
         by_id = {r["meta"]["run_id"]: r for r in all_rows}
-        if a_id not in by_id or b_id not in by_id:
-            raise SystemExit(f"run id not found: {a_id!r} / {b_id!r}")
-        ra, rb = by_id[a_id], by_id[b_id]
-        # Order as direct, gateway when possible
-        if ra["meta"]["target"] == "gateway" and rb["meta"]["target"] == "direct":
-            ra, rb = rb, ra
-        outputs.append(render_pair(ra, rb, args.format, args.allow_mixed_commit))
+        arms: dict[str, dict] = {}
+        for rid in args.run_ids:
+            if rid not in by_id:
+                raise SystemExit(f"run id not found: {rid!r}")
+            row = by_id[rid]
+            t = row["meta"]["target"]
+            if t not in ARMS:
+                raise SystemExit(f"run {rid} has unknown target {t!r}")
+            if t in arms:
+                raise SystemExit(f"duplicate target {t} in --run-ids")
+            arms[t] = row
+        outputs.append(render_group(arms, args.format, args.allow_mixed_commit))
     elif args.latest:
-        pairs = latest_pairs(rows)
-        if not pairs:
+        groups = latest_by_arm(rows)
+        if not groups:
             raise SystemExit(
-                "no direct/gateway pairs with {phase:main} metrics found for --latest "
+                "no phase-tagged runs found for --latest "
                 "(re-run after the warmup-exclusion fix)"
             )
-        for d, g in pairs:
-            outputs.append(render_pair(d, g, args.format, args.allow_mixed_commit))
+        for arms in groups:
+            outputs.append(render_group(arms, args.format, args.allow_mixed_commit))
     else:
         ap.error("specify --latest or --run-ids")
 

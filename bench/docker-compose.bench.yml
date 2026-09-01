@@ -224,6 +224,7 @@ services:
       VUS: ${VUS:-10}
       ITERATIONS: ${ITERATIONS:-1000}
       DIRECT_URL: http://bridge:8080
+      PASSTHROUGH_URL: http://kong:8000/raw
       GATEWAY_URL: http://kong:8000/db
       KEYCLOAK_URL: http://keycloak:8080
     depends_on:

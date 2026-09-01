@@ -1,17 +1,22 @@
 // E1 — governance overhead.
 //
-// Runs the same workload twice: once straight at the bridge, once through Kong
-// with JWT validation, rate limiting and OTel export active. The reported
-// result is the DELTA between the two, not the absolute latency.
+// Three arms on the same workload:
+//   direct       — client → bridge :8080
+//   passthrough  — client → Kong /raw (no plugins) → bridge
+//   gateway      — client → Kong /db (jwt + rate-limit + otel) → bridge
 //
-// That distinction matters. Absolute numbers from a laptop under Docker are
-// meaningless to a reviewer. The delta is not, because both paths carry the
-// same virtualisation overhead and it cancels.
+//   passthrough − direct  = proxy hop / proxying cost
+//   gateway − passthrough = governance policy cost  ← paper claim
+//   gateway − direct      = total mediation cost
+//
+// Absolute numbers from a laptop under Docker are meaningless to a reviewer.
+// The deltas are not, because shared virtualisation overhead cancels.
 //
 // Prefer the wrapper so every run is immutable and self-describing:
 //
-//   ./scripts/run-benchmark.sh --target direct  --vus 10 --iterations 5000
-//   ./scripts/run-benchmark.sh --target gateway --vus 10 --iterations 5000
+//   ./scripts/run-benchmark.sh --target direct      --vus 10 --iterations 5000
+//   ./scripts/run-benchmark.sh --target passthrough --vus 10 --iterations 5000
+//   ./scripts/run-benchmark.sh --target gateway     --vus 10 --iterations 5000
 //
 // Direct k6 invocation still works, but writes under results/runs/ only when
 // RUN_ID and RUN_METADATA_JSON are supplied by the wrapper.
@@ -25,9 +30,22 @@ const TARGET = __ENV.TARGET || 'direct';
 const VUS = parseInt(__ENV.VUS || '10', 10);
 const ITERATIONS = parseInt(__ENV.ITERATIONS || '1000', 10);
 
-const BASE = TARGET === 'gateway'
-  ? (__ENV.GATEWAY_URL || 'http://kong:8000/db')
-  : (__ENV.DIRECT_URL || 'http://bridge:8080');
+function resolveBase(target) {
+  if (target === 'gateway') {
+    return __ENV.GATEWAY_URL || 'http://kong:8000/db';
+  }
+  if (target === 'passthrough') {
+    return __ENV.PASSTHROUGH_URL || 'http://kong:8000/raw';
+  }
+  if (target === 'direct') {
+    return __ENV.DIRECT_URL || 'http://bridge:8080';
+  }
+  throw new Error(
+    `Unknown TARGET=${target}; expected direct|passthrough|gateway`,
+  );
+}
+
+const BASE = resolveBase(TARGET);
 
 const KEYCLOAK = __ENV.KEYCLOAK_URL || 'http://keycloak:8080';
 
@@ -120,6 +138,8 @@ export const options = {
 };
 
 export function setup() {
+  // Token only for the governed arm. Passthrough must NOT send Authorization —
+  // that would add header-parsing work Kong would otherwise skip.
   if (TARGET !== 'gateway') return { token: null };
 
   const res = http.post(

@@ -75,27 +75,51 @@ distort deltas when the VM is undersized. For citable runs, allocate **at least
 
 ### E1 — governance overhead
 
+Three arms isolate what the paper is about:
+
+| TARGET | Path | Measures |
+|---|---|---|
+| `direct` | `:8080` | Bridge alone |
+| `passthrough` | Kong `:8000/raw` (no plugins) | Proxy hop |
+| `gateway` | Kong `:8000/db` (jwt + rate-limit + otel) | Proxy + governance |
+
+`Δ proxy = passthrough − direct`, `Δ policy = gateway − passthrough`,
+`Δ total = gateway − direct`. **Lead with Δ policy.** Absolute throughput on
+this harness is a property of the harness; only the deltas transfer.
+
 ```bash
 # Single run (immutable path under results/runs/)
-./scripts/run-benchmark.sh --target direct  --vus 10 --iterations 5000
-./scripts/run-benchmark.sh --target gateway --vus 10 --iterations 5000 --note "post stall fix"
+./scripts/run-benchmark.sh --target direct      --vus 10 --iterations 5000
+./scripts/run-benchmark.sh --target passthrough --vus 10 --iterations 5000
+./scripts/run-benchmark.sh --target gateway     --vus 10 --iterations 5000 --note "post stall fix"
 
-# Full VU sweep (both targets × 1,10,50)
+# Full VU sweep (three targets × 1,10,50)
 ./scripts/run-benchmark.sh --sweep --iterations 5000
 
-# Paste-ready comparison table with provenance footer
+# Paste-ready three-arm decomposition with provenance footer
 ./scripts/summarise-runs.py --latest --format markdown
 ```
 
 Writes `results/runs/<UTC>-<target>-vus<N>-iter<M>.json` and appends a line to
 `results/runs/index.jsonl`. Dirty git trees are refused unless `--force` is
-set (dirty runs must not be cited). The reported result is gateway minus
-direct, per endpoint, at p50/p95/p99. First 30 seconds are a discarded warmup
+set (dirty runs must not be cited). First 30 seconds are a discarded warmup
 scenario covering JIT, HikariCP pool fill, and Kong plugin compilation —
 warmup samples are tagged `{phase:warmup}` and are **not** included in the
 `{phase:main}` series the summariser reads. Throughput is reported as
 `throughput_measured` (main phase only) and `throughput_wall` (k6's full-window
 rate, reference only).
+
+#### Interpreting latency and throughput
+
+- **VU=1** is serial: throughput is latency inverted. It is **not** a capacity
+  measurement and must not be presented as one.
+- **VU=10 and VU=50** saturate the direct path on this harness (~8,200 req/s
+  historically), so those figures are capacity measurements — of a host running
+  the load generator, Kong, the bridge, MySQL and Keycloak on shared CPUs.
+- Both Kong arms share the same process overhead, so **Δ policy** isolates
+  governance cost even when the host is contended. That is the column the paper
+  should lead with.
+- Absolute throughput is harness-bound. Cite deltas, not absolutes.
 
 ### E3 — reproducibility
 
