@@ -34,7 +34,9 @@ The project implements a two-layer architecture:
 | **Gateway layer** | MCP protocol, OAuth 2.1, rate limiting, OTEL audit logs — handled by native gateway policies |
 | **Bridge layer** | JDBC connectivity, schema introspection, query execution, SQL validation, OpenAPI generation |
 
-The bridge exposes five REST endpoints. The gateway's MCP proxy imports the `/openapi` output as its tool specification — no manual spec authoring required.
+The bridge exposes five REST endpoints (plus `GET /health` in sidecar mode). The
+gateway's MCP proxy imports the `/openapi` output as its tool specification —
+no manual spec authoring required.
 
 ```
 GET  /tables                 →  list_tables         (schema discovery)
@@ -42,6 +44,35 @@ GET  /tables/{t}/schema      →  describe_{t}_schema (column types + PKs)
 GET  /tables/{t}/rows        →  get_{t}_rows        (paginated, capped)
 POST /query                  →  run_query           (parameterized SELECT)
 GET  /openapi                →  (gateway config)    (live MCP-annotated spec)
+GET  /health                 →  (sidecar only)      (liveness / readiness)
+```
+
+### Response shapes (live sidecar output)
+
+Captured against the local bench stack (`curl localhost:8080/...`). Structure is
+authoritative; long arrays are truncated with `…`.
+
+```json
+GET /health
+{"status":"ok"}
+
+GET /tables
+{"tables":["customers","orders","products"],"count":3,"database":"testdb"}
+
+GET /tables/orders/schema
+{"table":"orders","columns":[{"name":"id","type":"INT","size":10,"nullable":false,"primaryKey":true},{"name":"customer_id","type":"INT","size":10,"nullable":false,"primaryKey":false},{"name":"status","type":"VARCHAR","size":32,"nullable":false,"primaryKey":false},{"name":"total","type":"DECIMAL","size":10,"nullable":false,"primaryKey":false},{"name":"placed_at","type":"TIMESTAMP","size":19,"nullable":true,"primaryKey":false}],"primaryKeys":["id"]}
+
+GET /tables/orders/rows?limit=3
+{"table":"orders","limit":3,"offset":0,"rows":[{"id":"1","customer_id":"1","status":"refunded","total":"1952.50","placed_at":null},{"id":"2","customer_id":"34","status":"completed","total":"1297.59","placed_at":null},{"id":"3","customer_id":"15","status":"cancelled","total":"1344.56","placed_at":null}],"count":3}
+
+POST /query  (success)
+{"columns":["id","status","total"],"rows":[{"id":"2","status":"completed","total":"1297.59"},{"id":"6","status":"completed","total":"107.15"}],"count":2,"truncated":false}
+
+POST /query  (rejected)
+{"error":{"code":"FORBIDDEN","message":"DDL and admin statements are not permitted (DROP, ALTER, CREATE, etc.)"}}
+
+GET /openapi  (prefix)
+{"openapi":"3.0.3","info":{"title":"Test DB MCP Bridge — testdb","version":"1.0.0","description":"Auto-generated from live DB schema. Import into Apigee X / Kong / Azure APIM MCP proxy configuration. Source: https://github.com/open-gw/gateway-db-mcp"},"paths":{"/tables":{"get":{"operationId":"list_tables",…}},…}}
 ```
 
 ---

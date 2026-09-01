@@ -35,7 +35,9 @@ fi
 
 echo
 echo "== tool manifest diff (the claim that actually matters) =="
-MANIFEST='[paths | to_entries[] | .value | to_entries[] | .value
+# OpenAPI paths object is `.paths` (the bare name `paths` is a jq builtin).
+# x-mcp-tool lives on each HTTP method object under .paths.<path>.<method>.
+MANIFEST='[.paths | to_entries[] | .value | to_entries[] | .value
            | select(.["x-mcp-tool"]) | .["x-mcp-tool"].name] | sort'
 jq "$MANIFEST" results/openapi-a.json > results/tools-a.json
 jq "$MANIFEST" results/openapi-b.json > results/tools-b.json
