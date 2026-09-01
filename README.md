@@ -4,7 +4,7 @@
 [![Java 11+](https://img.shields.io/badge/Java-11%2B-orange.svg)](https://openjdk.org/)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.open-gw/gateway-db-mcp.svg)](https://search.maven.org/artifact/io.github.open-gw/gateway-db-mcp)
 [![Build](https://github.com/open-gw/gateway-db-mcp/actions/workflows/build.yml/badge.svg)](https://github.com/open-gw/gateway-db-mcp/actions)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20174426.svg)](https://doi.org/10.5281/zenodo.20174426)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20174425.svg)](https://doi.org/10.5281/zenodo.20174425)
 [![Preprint](https://img.shields.io/badge/Preprint-SSRN%206763918-blue)](https://ssrn.com/abstract=6763918)
 
 **Config-driven JDBC database bridge for enterprise API gateway MCP proxies — Apigee X, Kong, Azure APIM. Zero custom code.**
@@ -506,9 +506,9 @@ If you use gateway-db-mcp in research, please cite the archived software release
                to {MCP} Tool Endpoints in Enterprise {API} Gateways},
   year      = {2026},
   publisher = {Zenodo},
-  version   = {v1.0.1},
-  doi       = {10.5281/zenodo.20174426},
-  url       = {https://doi.org/10.5281/zenodo.20174426}
+  version   = {v1.0.2},
+  doi       = {10.5281/zenodo.20174425},
+  url       = {https://doi.org/10.5281/zenodo.20174425}
 }
 ```
 
