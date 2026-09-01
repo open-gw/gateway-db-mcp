@@ -59,9 +59,9 @@ const T = {
 };
 
 // Wall-clock marks for the main scenario. Every main iteration records
-// scenario.startTime and Date.now(); handleSummary uses (max - min) as the
-// measured-phase duration. Sanity-check against the k6 console "main" elapsed
-// time — they should agree within a few hundred ms.
+// Date.now() at entry and exit; handleSummary uses (max - min) / 1000 as
+// main_scenario_duration_s. Do not mix in scenario.startTime — that is a
+// scheduled origin, not an observation, and pollutes the Trend extremes.
 const mainWallMark = new Trend('main_wall_mark_ms', false);
 
 // Endpoint steps exercised once per iteration. Length is requests_per_iteration
@@ -129,6 +129,7 @@ export const options = {
     // measurement. Thresholds on {phase:main} also force k6 to materialise the
     // filtered series into the summary JSON (required for Trend sub-metrics).
     'checks{phase:main}': ['rate>0.99'],
+    'iteration_duration{phase:main}': ['max<600000'],
     'ep_list_tables{phase:main}':     ['p(99)<60000'],
     'ep_describe_schema{phase:main}': ['p(99)<60000'],
     'ep_get_rows{phase:main}':        ['p(99)<60000'],
@@ -167,7 +168,6 @@ export function workload(data) {
   const phaseTag = { phase };
 
   if (phase === 'main') {
-    mainWallMark.add(exec.scenario.startTime);
     mainWallMark.add(Date.now());
   }
 
@@ -175,6 +175,10 @@ export function workload(data) {
     const r = step.run(h);
     check(r, { [step.checkName]: (x) => x.status === 200 });
     step.trend.add(r.timings.duration, phaseTag);
+  }
+
+  if (phase === 'main') {
+    mainWallMark.add(Date.now());
   }
 }
 
@@ -200,8 +204,8 @@ export function handleSummary(summary) {
   }
 
   // Measured-phase throughput: ITERATIONS × requests_per_iteration / main wall
-  // duration. Do NOT use http_reqs.rate — that divides by the full test window
-  // (warmup + gap + main + graceful stop).
+  // duration from in-k6 Date.now() marks. Do NOT use http_reqs.rate — that
+  // divides by the full test window (warmup + gap + main + graceful stop).
   const mark = (summary.metrics || {}).main_wall_mark_ms;
   const markVals = mark && mark.values ? mark.values : null;
   let mainDurationS = null;
@@ -217,7 +221,7 @@ export function handleSummary(summary) {
   metadata.throughput_measured = throughputMeasured;
   metadata.throughput_wall = httpReqs.rate != null ? httpReqs.rate : null;
   metadata.main_duration_method =
-    'main_wall_mark_ms Trend: max(Date.now|scenario.startTime) - min(...) over main iterations';
+    'main_wall_mark_ms Trend: max(Date.now) - min(Date.now) over main iteration entry/exit';
 
   // Completeness: measured-phase count must equal ITERATIONS and duration must exist.
   const mainList = ((summary.metrics || {})['ep_list_tables{phase:main}'] || {}).values || {};
@@ -231,8 +235,53 @@ export function handleSummary(summary) {
     status = 'aborted';
     abortReason = `ep_list_tables{phase:main}.count=${mainCount} != ITERATIONS=${ITERATIONS}`;
   }
+
+  // Sanity: measured throughput must agree with iteration time within 2x.
+  // Catches duration contamination (harness activity overlapping the window).
+  if (status === 'complete' && throughputMeasured != null) {
+    const metrics = summary.metrics || {};
+    let iterMedMs = null;
+    const tagged = (metrics['iteration_duration{phase:main}'] || {}).values || {};
+    if (tagged.med != null) {
+      iterMedMs = tagged.med;
+    } else {
+      // Fallback when the tagged series is absent: sum of endpoint medians.
+      let sum = 0;
+      let n = 0;
+      for (const name of [
+        'ep_list_tables{phase:main}',
+        'ep_describe_schema{phase:main}',
+        'ep_get_rows{phase:main}',
+        'ep_run_query{phase:main}',
+      ]) {
+        const med = ((metrics[name] || {}).values || {}).med;
+        if (med != null) {
+          sum += med;
+          n += 1;
+        }
+      }
+      if (n === REQUESTS_PER_ITERATION) iterMedMs = sum;
+    }
+    if (iterMedMs != null && iterMedMs > 0) {
+      const implied = (VUS * REQUESTS_PER_ITERATION * 1000.0) / iterMedMs;
+      metadata.throughput_implied_by_iteration_med = implied;
+      const ratio = throughputMeasured > implied
+        ? throughputMeasured / implied
+        : implied / throughputMeasured;
+      if (ratio > 2) {
+        status = 'suspect';
+        abortReason =
+          `throughput_measured=${throughputMeasured} differs >2x from ` +
+          `iteration-implied=${implied} (ratio=${ratio.toFixed(2)})`;
+      }
+    }
+  }
+
   metadata.status = status;
-  if (abortReason) metadata.abort_reason = abortReason;
+  if (abortReason) {
+    if (status === 'suspect') metadata.suspect_reason = abortReason;
+    else metadata.abort_reason = abortReason;
+  }
 
   const payload = Object.assign({}, summary, {
     run_metadata: metadata,

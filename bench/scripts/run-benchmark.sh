@@ -18,6 +18,8 @@ SWEEP=0
 ALLOW_EXTRA=0
 REPEATS=3
 NO_SPAN_FILE=0
+RESET_TELEMETRY=0
+RESET_TELEMETRY_ONCE=0
 
 LATENCY_SERVICES=(mysql-a bridge keycloak kong otel-collector jaeger)
 EXTRA_SERVICES=(mysql-b bridge-b postgres bridge-pg)
@@ -27,8 +29,15 @@ usage() {
 Usage:
   ./scripts/run-benchmark.sh --target direct|passthrough|gateway --vus N --iterations N
       [--note TEXT] [--force] [--allow-extra-containers] [--repeats N] [--no-span-file]
+      [--reset-telemetry | --reset-telemetry-once]
   ./scripts/run-benchmark.sh --sweep --iterations N
       [--note TEXT] [--force] [--allow-extra-containers] [--repeats N] [--no-span-file]
+      [--reset-telemetry | --reset-telemetry-once]
+
+Telemetry reset (gateway only; diagnostic — not for citable runs):
+  (default)                 no per-run reset
+  --reset-telemetry         full reset before every governed run/repeat
+  --reset-telemetry-once    full reset once before the first run (sweep or repeats)
 EOF
   exit 2
 }
@@ -44,6 +53,8 @@ while [[ $# -gt 0 ]]; do
     --allow-extra-containers) ALLOW_EXTRA=1; shift ;;
     --repeats) REPEATS="${2:-}"; shift 2 ;;
     --no-span-file) NO_SPAN_FILE=1; shift ;;
+    --reset-telemetry) RESET_TELEMETRY=1; shift ;;
+    --reset-telemetry-once) RESET_TELEMETRY_ONCE=1; shift ;;
     -h|--help) usage ;;
     *) echo "Unknown arg: $1" >&2; usage ;;
   esac
@@ -59,6 +70,21 @@ if ! [[ "$REPEATS" =~ ^[1-9][0-9]*$ ]]; then
   echo "REFUSE: --repeats must be a positive integer (got '$REPEATS')" >&2
   exit 2
 fi
+
+if [[ "$RESET_TELEMETRY" -eq 1 && "$RESET_TELEMETRY_ONCE" -eq 1 ]]; then
+  echo "REFUSE: use only one of --reset-telemetry / --reset-telemetry-once" >&2
+  exit 2
+fi
+
+# Session-level mode recorded on every run_metadata.telemetry_reset.
+if [[ "$RESET_TELEMETRY" -eq 1 ]]; then
+  TELEMETRY_RESET_MODE=per_run
+elif [[ "$RESET_TELEMETRY_ONCE" -eq 1 ]]; then
+  TELEMETRY_RESET_MODE=once
+else
+  TELEMETRY_RESET_MODE=none
+fi
+TELEMETRY_ONCE_DONE=0
 
 if [[ "$SWEEP" -ne 1 ]]; then
   case "$TARGET" in
@@ -335,13 +361,29 @@ wipe_jaeger_store() {
   jaeger_store_empty_of_kong
 }
 
+# Soft pre-sweep clean start: restart Jaeger only (no Kong bounce). Collector
+# stays up; MEMORY_MAX_TRACES keeps the store from growing unbounded.
+restart_jaeger_once() {
+  echo "Restarting jaeger once for a clean in-memory store…" >&2
+  "${COMPOSE[@]}" restart jaeger
+  wait_jaeger_ui
+  "${COMPOSE[@]}" up -d --no-deps otel-collector >/dev/null
+  local deadline=$((SECONDS + 60))
+  until docker inspect -f '{{.State.Status}}' gatewaydb-mcp-bench-otel-collector-1 2>/dev/null | grep -qx running; do
+    if (( SECONDS >= deadline )); then
+      echo "REFUSE: otel-collector did not become running within 60s after jaeger restart" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  sleep "${JAEGER_RESET_SETTLE_S}"
+}
+
+# Full diagnostic reset (opt-in via --reset-telemetry / --reset-telemetry-once).
+# Kong buffers OTLP while the collector is down; restarting Jaeger alone leaves
+# buffered spans that flush into the new store, so this escalates to bouncing
+# Kong. Introduces more variance than it removes — not for citable runs.
 reset_jaeger_store() {
-  # Kong buffers OTLP while the collector is down. After a governed run that
-  # buffer can be huge: if we start the collector for traces_arriving without
-  # clearing it, the flush lands in the "empty" store before k6 and the run
-  # is no longer comparable (seen as mem_start ~100 MB and 30%+ throughput
-  # spread). Drain, bounce Kong to drop the plugin queue, wipe once more,
-  # and leave the collector STOPPED for the empty-store preflight.
   local JAEGER_DRAIN_S="${JAEGER_DRAIN_S:-8}"
   local attempt
 
@@ -373,7 +415,6 @@ reset_jaeger_store() {
     fi
     sleep 2
   done
-  # Anything emitted during Kong's own restart goes into a disposable store.
   start_otel_collector
   sleep 3
   if ! wipe_jaeger_store; then
@@ -386,18 +427,23 @@ reset_jaeger_store() {
 
 # ── preflight ────────────────────────────────────────────────────────────────
 # Returns JSON map of check -> pass|fail|skipped via stdout. Exits 1 on any fail.
-# For gateway: empty-store gates run while the collector is still stopped (set by
-# reset_jaeger_store); the collector is started only after those gates pass.
+# For gateway with a fresh opt-in reset: empty-store gates run while the
+# collector is still stopped; the collector is started only after those gates
+# pass. Without a fresh reset the collector is already up and the store may
+# hold prior traces — only the RSS ceiling is enforced.
 run_preflight() {
   local target="$1"
+  local fresh_reset="${2:-0}"
   local store_json rest_json
 
   store_json=$(
     FORCE="$FORCE" GIT_DIRTY="$GIT_DIRTY" JAEGER_MEM_LIMIT_MB="$JAEGER_MEM_LIMIT_MB" \
+      FRESH_RESET="$fresh_reset" \
       python3 - "$target" <<'PY'
 import json, os, re, subprocess, sys, urllib.parse, urllib.request
 
 target = sys.argv[1]
+fresh = os.environ.get("FRESH_RESET", "0") == "1"
 checks = {}
 failed = []
 mem_limit = float(os.environ.get("JAEGER_MEM_LIMIT_MB", "1024"))
@@ -447,7 +493,10 @@ if target != "gateway":
     for n in ("jaeger_reset", "jaeger_running", "jaeger_memory", "jaeger_trace_count"):
         skip(n)
 else:
-    pass_("jaeger_reset")
+    if fresh:
+        pass_("jaeger_reset")
+    else:
+        skip("jaeger_reset")
     try:
         st = sh("docker", "inspect", "-f", "{{.State.Status}}", "gatewaydb-mcp-bench-jaeger-1")
         if st != "running":
@@ -472,27 +521,30 @@ else:
     except Exception as e:
         fail("jaeger_memory", str(e))
 
-    try:
-        with urllib.request.urlopen("http://localhost:16686/api/services", timeout=15) as resp:
-            services = json.loads(resp.read().decode())
-        flat = service_names(services)
-        n_traces = 0
-        if "kong-bench" in flat:
-            q = urllib.parse.urlencode({"service": "kong-bench", "limit": "20"})
-            with urllib.request.urlopen(f"http://localhost:16686/api/traces?{q}", timeout=15) as resp:
-                body = json.loads(resp.read().decode())
-            data = body.get("data", body) if isinstance(body, dict) else body
-            n_traces = len(data or [])
-        checks["jaeger_trace_count_value"] = n_traces
-        if n_traces > 0 or "kong-bench" in flat:
-            fail(
-                "jaeger_trace_count",
-                f"store not empty after reset (services={flat!r}, kong-bench traces≈{n_traces})",
-            )
-        else:
-            pass_("jaeger_trace_count")
-    except Exception as e:
-        fail("jaeger_trace_count", str(e))
+    if not fresh:
+        skip("jaeger_trace_count")
+    else:
+        try:
+            with urllib.request.urlopen("http://localhost:16686/api/services", timeout=15) as resp:
+                services = json.loads(resp.read().decode())
+            flat = service_names(services)
+            n_traces = 0
+            if "kong-bench" in flat:
+                q = urllib.parse.urlencode({"service": "kong-bench", "limit": "20"})
+                with urllib.request.urlopen(f"http://localhost:16686/api/traces?{q}", timeout=15) as resp:
+                    body = json.loads(resp.read().decode())
+                data = body.get("data", body) if isinstance(body, dict) else body
+                n_traces = len(data or [])
+            checks["jaeger_trace_count_value"] = n_traces
+            if n_traces > 0 or "kong-bench" in flat:
+                fail(
+                    "jaeger_trace_count",
+                    f"store not empty after reset (services={flat!r}, kong-bench traces≈{n_traces})",
+                )
+            else:
+                pass_("jaeger_trace_count")
+        except Exception as e:
+            fail("jaeger_trace_count", str(e))
 
 print(json.dumps(checks, separators=(",", ":")))
 if failed:
@@ -503,7 +555,7 @@ if failed:
 PY
   ) || return 1
 
-  if [[ "$target" == "gateway" ]]; then
+  if [[ "$target" == "gateway" && "$fresh_reset" -eq 1 ]]; then
     start_otel_collector
     echo "settle ${JAEGER_RESET_SETTLE_S}s after collector start..." >&2
     sleep "$JAEGER_RESET_SETTLE_S"
@@ -651,25 +703,43 @@ run_one() {
   local target="$1" vus="$2" iterations="$3" repeat_index="$4" repeat_group_id="$5"
   local ts_compact ts_iso run_id out_path meta preflight spans_start spans_end k6_rc status
   local jaeger_mem_start="" jaeger_mem_end=""
+  local fresh_reset=0 telemetry_reset_seconds="" reset_t0
 
   # Truncate spans before each run (and each repeat).
   : > results/spans.jsonl
   spans_start=$(wc -c < results/spans.jsonl | tr -d ' ')
 
   if [[ "$target" == "gateway" ]]; then
-    reset_jaeger_store
+    if [[ "$TELEMETRY_RESET_MODE" == "per_run" ]]; then
+      reset_t0=$SECONDS
+      reset_jaeger_store
+      telemetry_reset_seconds=$((SECONDS - reset_t0))
+      fresh_reset=1
+    elif [[ "$TELEMETRY_RESET_MODE" == "once" && "$TELEMETRY_ONCE_DONE" -eq 0 ]]; then
+      reset_t0=$SECONDS
+      reset_jaeger_store
+      telemetry_reset_seconds=$((SECONDS - reset_t0))
+      fresh_reset=1
+      TELEMETRY_ONCE_DONE=1
+    else
+      echo "Skipping per-run telemetry reset (mode=$TELEMETRY_RESET_MODE)" >&2
+    fi
   else
     echo "Skipping jaeger reset (target=$target — no telemetry in path)" >&2
   fi
 
-  preflight=$(run_preflight "$target") || exit 1
+  preflight=$(run_preflight "$target" "$fresh_reset") || exit 1
 
   if [[ "$target" == "gateway" ]]; then
     jaeger_mem_start=$(jaeger_memory_mb)
-    if awk -v m="$jaeger_mem_start" -v lim="$JAEGER_MEM_START_MAX_MB" 'BEGIN { exit (m+0 > lim+0) ? 0 : 1 }'; then
-      echo "REFUSE: jaeger_memory_mb_start=${jaeger_mem_start} exceeds JAEGER_MEM_START_MAX_MB=${JAEGER_MEM_START_MAX_MB}" >&2
-      echo "        Kong likely flushed a buffered OTLP queue into the store after reset — not a comparable run." >&2
-      exit 1
+    # Start-RSS ceiling only applies after a fresh opt-in reset; without a reset
+    # the store may already hold prior traces up to MEMORY_MAX_TRACES.
+    if [[ "$fresh_reset" -eq 1 ]]; then
+      if awk -v m="$jaeger_mem_start" -v lim="$JAEGER_MEM_START_MAX_MB" 'BEGIN { exit (m+0 > lim+0) ? 0 : 1 }'; then
+        echo "REFUSE: jaeger_memory_mb_start=${jaeger_mem_start} exceeds JAEGER_MEM_START_MAX_MB=${JAEGER_MEM_START_MAX_MB}" >&2
+        echo "        Kong likely flushed a buffered OTLP queue into the store after reset — not a comparable run." >&2
+        exit 1
+      fi
     fi
   fi
 
@@ -693,6 +763,7 @@ run_one() {
     export PREFLIGHT_JSON="$preflight" REPEAT_INDEX="$repeat_index" REPEAT_GROUP="$repeat_group_id"
     export SPANS_START="$spans_start" NO_SPAN_FILE
     export JAEGER_MEM_START="${jaeger_mem_start}"
+    export TELEMETRY_RESET_MODE TELEMETRY_RESET_SECONDS="${telemetry_reset_seconds}"
     python3 - <<'PY'
 import json, os
 meta = {
@@ -715,10 +786,14 @@ meta = {
   "spans_bytes_start": int(os.environ["SPANS_START"]),
   "no_span_file": os.environ.get("NO_SPAN_FILE", "0") == "1",
   "notes": os.environ.get("NOTE", ""),
+  "telemetry_reset": os.environ.get("TELEMETRY_RESET_MODE", "none"),
 }
 start = os.environ.get("JAEGER_MEM_START", "").strip()
 if start:
     meta["jaeger_memory_mb_start"] = float(start)
+sec = os.environ.get("TELEMETRY_RESET_SECONDS", "").strip()
+if sec != "":
+    meta["telemetry_reset_seconds"] = float(sec)
 print(json.dumps(meta, separators=(",", ":")))
 PY
   )
@@ -759,7 +834,7 @@ end = os.environ.get("JAEGER_MEM_END", "").strip()
 if end:
     meta["jaeger_memory_mb_end"] = float(end)
 status = data.get("status") or meta.get("status") or "complete"
-reason = meta.get("abort_reason")
+reason = meta.get("abort_reason") or meta.get("suspect_reason")
 k6_rc = int(os.environ["K6_RC"])
 iterations = int(os.environ["ITERATIONS"])
 if k6_rc != 0:
@@ -767,16 +842,19 @@ if k6_rc != 0:
     reason = f"k6 exit status {k6_rc}" + (f"; {reason}" if reason else "")
 main = ((data.get("metrics") or {}).get("ep_list_tables{phase:main}") or {}).get("values") or {}
 count = main.get("count")
-if status != "aborted" and count != iterations:
+if status not in ("aborted", "suspect") and count != iterations:
     status = "aborted"
     reason = f"ep_list_tables{{phase:main}}.count={count} != ITERATIONS={iterations}"
-if status != "aborted" and meta.get("main_scenario_duration_s") is None:
+if status not in ("aborted", "suspect") and meta.get("main_scenario_duration_s") is None:
     status = "aborted"
     reason = "main_scenario_duration_s is null"
 data["status"] = status
 meta["status"] = status
 if reason:
-    meta["abort_reason"] = reason
+    if status == "suspect":
+        meta["suspect_reason"] = reason
+    else:
+        meta["abort_reason"] = reason
 with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
@@ -809,8 +887,8 @@ with open("results/runs/index.jsonl", "a", encoding="utf-8") as f:
 PY
 
   echo "Wrote $out_path status=$status" >&2
-  if [[ "$status" == "aborted" ]]; then
-    echo "REFUSE: run aborted — see $out_path" >&2
+  if [[ "$status" == "aborted" || "$status" == "suspect" ]]; then
+    echo "REFUSE: run $status — see $out_path" >&2
     exit 1
   fi
   printf '%s\n' "$out_path"
@@ -828,6 +906,14 @@ run_config() {
     fi
   done
 }
+
+# Pre-sweep / pre-session telemetry preparation.
+if [[ "$TELEMETRY_RESET_MODE" == "once" ]]; then
+  : # full reset happens on first governed run_one
+elif [[ "$SWEEP" -eq 1 ]]; then
+  # Soft clean start for sweeps without the opt-in full reset.
+  restart_jaeger_once
+fi
 
 if [[ "$SWEEP" -eq 1 ]]; then
   for target in direct passthrough gateway; do

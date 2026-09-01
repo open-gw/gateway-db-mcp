@@ -109,12 +109,12 @@ VirtioFS, which contaminates latency measurements.
 
 The runner refuses to measure when preconditions fail: Jaeger/collector down on
 a governed target, collector export errors, traces not arriving at Jaeger,
-Jaeger memory or residual traces after store reset, misconfigured `/db`/`/raw`
-routes, unexpected containers, or a dirty git tree. Each check is recorded in
-`run_metadata.preflight`. Aborted k6 runs are archived with `"status": "aborted"`
-and skipped by the summariser. Governed runs wipe Jaeger (collector stopped,
-OTLP buffer drained, store confirmed empty) before each repeat so every
-measurement starts from an empty, bounded in-memory store.
+Jaeger RSS above `JAEGER_MEM_LIMIT_MB`, misconfigured `/db`/`/raw` routes,
+unexpected containers, or a dirty git tree. Each check is recorded in
+`run_metadata.preflight`. Aborted or suspect k6 runs are archived with the
+corresponding `status` and skipped by the summariser. Default governed runs do
+**not** restart Jaeger/Kong per repeat; use `--reset-telemetry` only as a
+diagnostic (see Telemetry confounds). Sweeps restart Jaeger once up front.
 
 Writes `results/runs/<UTC>-<target>-vus<N>-iter<M>[-rK].json` and appends a line to
 `results/runs/index.jsonl`. Dirty git trees are refused unless `--force` is
@@ -161,15 +161,26 @@ such artifacts so far; they belong in the paper's threats-to-validity discussion
 4. **Unbounded Jaeger store** — `jaeger-all-in-one` defaults to an unbounded
    in-memory span store. Three identical gateway runs (VU=1, 20k iterations)
    measured 678 → 669 → 405 req/s as the store grew from fresh to ~40k traces
-   (41% of median, past the 25% outlier threshold). A prior run hit 5.7 GiB and
-   aborted on k6's 10-minute ceiling. The harness now sets
-   `MEMORY_MAX_TRACES=10000` (and `--memory.max-traces=10000`), restarts Jaeger
-   before every governed run/repeat (stopping the collector first, draining
-   Kong's OTLP buffer into a disposable store, and bouncing Kong so a leftover
-   queue cannot refill the store), refuses starts when Jaeger RSS exceeds
-   `JAEGER_MEM_LIMIT_MB` (default 1024) or `JAEGER_MEM_START_MAX_MB` (default 64)
-   after seeding, or residual `kong-bench` traces remain, and raises
-   `maxDuration` to 30m so a merely-slow run is not discarded.
+   (41% of median). A prior run hit 5.7 GiB and aborted on k6's 10-minute
+   ceiling. The harness keeps `MEMORY_MAX_TRACES=10000` (and
+   `--memory.max-traces=10000`), the `jaeger_memory` preflight ceiling
+   (`JAEGER_MEM_LIMIT_MB`, default 1024), and raises `maxDuration` to 30m.
+   Sweeps restart Jaeger **once** before the first run for a clean start.
+5. **Per-run telemetry reset** — a routine that stopped the collector, drained
+   Kong's OTLP buffer, wiped Jaeger, and bounced Kong before every governed
+   run made variance *worse*: 410 / **160** / 550 req/s (97% of median) on the
+   same VU=1 / 20k config. The 160 req/s run was internally healthy
+   (`ep_list_tables{phase:main}` med 0.8 ms) — `main_scenario_duration_s` had
+   absorbed reset activity overlapping the measured window. Direct k6 with one
+   manual Jaeger restart beforehand agreed within ~9%. The full reset is kept
+   as `--reset-telemetry` / `--reset-telemetry-once` for diagnostics and must
+   **not** be used for citable runs; default is no per-run reset. Duration is
+   measured inside k6 from `Date.now()` marks, and a run is marked
+   `status=suspect` if `throughput_measured` differs >2× from the value implied
+   by `iteration_duration{phase:main}`.
+
+`run_metadata.telemetry_reset` records `none`, `per_run`, or `once`. When the
+opt-in routine runs, `telemetry_reset_seconds` records its own wall cost.
 
 ### E3 — reproducibility
 
