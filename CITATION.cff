@@ -35,6 +35,9 @@ repository-code: https://github.com/open-gw/gateway-db-mcp
 url: https://doi.org/10.5281/zenodo.20174426
 identifiers:
   - type: doi
+    value: 10.5281/zenodo.20174425
+    description: Archived software release v1.0.1 on Zenodo.
+  - type: doi
     value: 10.5281/zenodo.20174426
     description: Archived software release v1.0.1 on Zenodo.
   - type: doi
@@ -42,11 +45,6 @@ identifiers:
     description: >-
       Companion preprint on SSRN, Abstract ID 6763918. Preprint only; not
       peer reviewed.
-  - type: other
-    value: hal-05622597
-    description: >-
-      Companion preprint cross-deposited on HAL. Preprint only; not peer
-      reviewed.
 keywords:
   - Model Context Protocol
   - MCP
