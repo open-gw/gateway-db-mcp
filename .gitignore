@@ -17,3 +17,11 @@ dependency-reduced-pom.xml
 # macOS
 .DS_Store
 **/.DS_Store
+
+# Bench: ephemeral / overwritten outputs (not the evidence trail)
+bench/results/*.json
+bench/results/*.diff
+bench/results/spans.jsonl
+# Immutable provenance-bearing runs ARE tracked:
+#   bench/results/runs/*.json
+#   bench/results/runs/index.jsonl

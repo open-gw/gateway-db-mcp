@@ -36,9 +36,19 @@ number and a reviewer will say so. The difference between the direct path and
 the gateway-mediated path is meaningful, because both carry the same
 virtualisation overhead and it cancels.
 
-Every figure that leaves this harness states the harness. No figure is
-described as measured unless it came out of an actual run recorded in
-`results/`.
+### Citation rule (immutable runs)
+
+Any performance figure appearing in a paper, the repository README, or any
+external document **must cite a `run_id` present under `results/runs/`**. A
+figure with no corresponding run record does not go in.
+
+Each file under `results/runs/` is immutable (never overwritten) and carries a
+`run_metadata` block: git commit, dirty flag, image digests, host spec, bridge
+config, VUs, and iteration count. The append-only `results/runs/index.jsonl`
+is the scannable ledger of every measurement.
+
+Pre-provenance files left in `results/*.json` from earlier experiments are
+historical only and must not be cited.
 
 ## Running
 
@@ -51,18 +61,22 @@ docker compose -f docker-compose.bench.yml ps        # wait for healthy
 ### E1 — governance overhead
 
 ```bash
-for VUS in 1 10 50; do
-  TARGET=direct  VUS=$VUS docker compose -f docker-compose.bench.yml \
-    --profile bench run --rm k6 run /scripts/latency.js
-  TARGET=gateway VUS=$VUS docker compose -f docker-compose.bench.yml \
-    --profile bench run --rm k6 run /scripts/latency.js
-done
+# Single run (immutable path under results/runs/)
+./scripts/run-benchmark.sh --target direct  --vus 10 --iterations 5000
+./scripts/run-benchmark.sh --target gateway --vus 10 --iterations 5000 --note "post stall fix"
+
+# Full VU sweep (both targets × 1,10,50)
+./scripts/run-benchmark.sh --sweep --iterations 5000
+
+# Paste-ready comparison table with provenance footer
+./scripts/summarise-runs.py --latest --format markdown
 ```
 
-Writes `results/latency-{direct,gateway}-vus{N}.json`. The reported result is
-gateway minus direct, per endpoint, at p50/p95/p99. First 30 seconds are a
-discarded warmup scenario covering JIT, HikariCP pool fill, and Kong plugin
-compilation.
+Writes `results/runs/<UTC>-<target>-vus<N>-iter<M>.json` and appends a line to
+`results/runs/index.jsonl`. Dirty git trees are refused unless `--force` is
+set (dirty runs must not be cited). The reported result is gateway minus
+direct, per endpoint, at p50/p95/p99. First 30 seconds are a discarded warmup
+scenario covering JIT, HikariCP pool fill, and Kong plugin compilation.
 
 ### E3 — reproducibility
 
