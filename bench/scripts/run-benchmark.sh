@@ -249,6 +249,9 @@ K6_VERSION=$(docker image inspect grafana/k6:0.54.0 --format '{{index .Config.La
 # function of prior run ordering. See README "Telemetry confounds".
 JAEGER_CONTAINER=gatewaydb-mcp-bench-jaeger-1
 JAEGER_MEM_LIMIT_MB="${JAEGER_MEM_LIMIT_MB:-1024}"
+# After reset + traces_arriving seed, RSS should stay near a fresh process.
+# ~100 MB at start means Kong flushed a leftover OTLP queue into the store.
+JAEGER_MEM_START_MAX_MB="${JAEGER_MEM_START_MAX_MB:-64}"
 JAEGER_RESET_SETTLE_S="${JAEGER_RESET_SETTLE_S:-5}"
 
 jaeger_memory_mb() {
@@ -333,14 +336,12 @@ wipe_jaeger_store() {
 }
 
 reset_jaeger_store() {
-  # Kong buffers OTLP while the collector is down. Drain that buffer into a
-  # disposable store, wipe again, and leave the collector STOPPED so the
-  # empty-store preflight cannot race a flush. Preflight starts the collector
-  # after jaeger_trace_count passes.
-  #
-  # One drain pass is not always enough after a long governed run — Kong can
-  # still be flushing when the collector comes back. Loop drain+wipe, and if
-  # that still fails, bounce Kong to drop the plugin's OTLP queue.
+  # Kong buffers OTLP while the collector is down. After a governed run that
+  # buffer can be huge: if we start the collector for traces_arriving without
+  # clearing it, the flush lands in the "empty" store before k6 and the run
+  # is no longer comparable (seen as mem_start ~100 MB and 30%+ throughput
+  # spread). Drain, bounce Kong to drop the plugin queue, wipe once more,
+  # and leave the collector STOPPED for the empty-store preflight.
   local JAEGER_DRAIN_S="${JAEGER_DRAIN_S:-8}"
   local attempt
 
@@ -352,15 +353,13 @@ reset_jaeger_store() {
     fi
   fi
 
-  for attempt in 1 2 3; do
+  for attempt in 1 2; do
     echo "Draining Kong OTLP buffer into disposable Jaeger store (${JAEGER_DRAIN_S}s, attempt $attempt)…" >&2
     start_otel_collector
     sleep "$JAEGER_DRAIN_S"
-    if wipe_jaeger_store; then
-      echo "Jaeger store empty; collector left stopped for empty-store preflight." >&2
-      return 0
+    if ! wipe_jaeger_store; then
+      echo "WARNING: kong-bench still present after drain wipe attempt $attempt…" >&2
     fi
-    echo "WARNING: kong-bench still present after drain wipe attempt $attempt…" >&2
   done
 
   echo "Restarting Kong to drop residual OTLP buffer…" >&2
@@ -374,14 +373,14 @@ reset_jaeger_store() {
     fi
     sleep 2
   done
-  # Drop anything Kong emitted during its own restart into a disposable store.
+  # Anything emitted during Kong's own restart goes into a disposable store.
   start_otel_collector
-  sleep "$JAEGER_DRAIN_S"
+  sleep 3
   if ! wipe_jaeger_store; then
     echo "REFUSE: jaeger store not empty after Kong restart + drain" >&2
     exit 1
   fi
-  echo "Jaeger store empty after Kong restart; collector left stopped for preflight." >&2
+  echo "Jaeger store empty; Kong restarted; collector left stopped for preflight." >&2
 }
 
 
@@ -667,6 +666,11 @@ run_one() {
 
   if [[ "$target" == "gateway" ]]; then
     jaeger_mem_start=$(jaeger_memory_mb)
+    if awk -v m="$jaeger_mem_start" -v lim="$JAEGER_MEM_START_MAX_MB" 'BEGIN { exit (m+0 > lim+0) ? 0 : 1 }'; then
+      echo "REFUSE: jaeger_memory_mb_start=${jaeger_mem_start} exceeds JAEGER_MEM_START_MAX_MB=${JAEGER_MEM_START_MAX_MB}" >&2
+      echo "        Kong likely flushed a buffered OTLP queue into the store after reset — not a comparable run." >&2
+      exit 1
+    fi
   fi
 
   ts_compact=$(date -u +%Y%m%dT%H%M%SZ)
