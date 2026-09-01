@@ -8,10 +8,13 @@
 // meaningless to a reviewer. The delta is not, because both paths carry the
 // same virtualisation overhead and it cancels.
 //
-//   TARGET=direct  docker compose -f docker-compose.bench.yml --profile bench \
-//                    run --rm k6 run /scripts/latency.js
-//   TARGET=gateway docker compose -f docker-compose.bench.yml --profile bench \
-//                    run --rm k6 run /scripts/latency.js
+// Prefer the wrapper so every run is immutable and self-describing:
+//
+//   ./scripts/run-benchmark.sh --target direct  --vus 10 --iterations 5000
+//   ./scripts/run-benchmark.sh --target gateway --vus 10 --iterations 5000
+//
+// Direct k6 invocation still works, but writes under results/runs/ only when
+// RUN_ID and RUN_METADATA_JSON are supplied by the wrapper.
 
 import http from 'k6/http';
 import { check } from 'k6';
@@ -88,7 +91,6 @@ function hdrs(data) {
 
 export function workload(data) {
   const h = hdrs(data);
-  const phase = __ITER >= 0 ? undefined : undefined; // tags come from scenario
 
   let r = http.get(`${BASE}/tables`, { headers: h, tags: { ep: 'list_tables' } });
   check(r, { 'list_tables 200': (x) => x.status === 200 });
@@ -115,9 +117,26 @@ export function workload(data) {
 export default function () { }
 
 export function handleSummary(summary) {
-  const out = `/results/latency-${TARGET}-vus${VUS}.json`;
+  const runId = __ENV.RUN_ID;
+  if (!runId) {
+    // Wrapper did not run — refuse to write a colliding legacy path.
+    const msg = '\nERROR: RUN_ID unset. Use ./scripts/run-benchmark.sh so results are immutable.\n';
+    return { stdout: msg };
+  }
+
+  const out = `/results/runs/${runId}.json`;
+  let metadata = {};
+  if (__ENV.RUN_METADATA_JSON) {
+    try {
+      metadata = JSON.parse(__ENV.RUN_METADATA_JSON);
+    } catch (e) {
+      metadata = { parse_error: String(e), raw: __ENV.RUN_METADATA_JSON };
+    }
+  }
+
+  const payload = Object.assign({}, summary, { run_metadata: metadata });
   return {
-    [out]: JSON.stringify(summary, null, 2),
+    [out]: JSON.stringify(payload, null, 2),
     stdout: `\nWrote ${out}\n`,
   };
 }
