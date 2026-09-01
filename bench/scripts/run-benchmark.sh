@@ -143,13 +143,23 @@ import json, subprocess
 
 def digest(cname):
     try:
-        return subprocess.check_output(
+        img_id = subprocess.check_output(
+            ["docker", "inspect", "-f", "{{.Image}}", cname],
+            text=True, stderr=subprocess.DEVNULL).strip()
+        tag = subprocess.check_output(
+            ["docker", "inspect", "-f", "{{.Config.Image}}", cname],
+            text=True, stderr=subprocess.DEVNULL).strip()
+        # Digests live on the image, not the container.
+        repo = subprocess.check_output(
             ["docker", "inspect", "-f",
-             "{{if index .RepoDigests 0}}{{index .RepoDigests 0}}{{else}}{{.Config.Image}} {{.Image}}{{end}}",
-             cname],
-            text=True, stderr=subprocess.DEVNULL).strip() or "unknown"
-    except Exception:
-        return "unknown"
+             "{{if index .RepoDigests 0}}{{index .RepoDigests 0}}{{end}}",
+             img_id],
+            text=True, stderr=subprocess.DEVNULL).strip()
+        if repo:
+            return repo
+        return f"{tag} {img_id}"
+    except Exception as e:
+        return f"unknown ({e})"
 
 print(json.dumps({
     "bridge": digest("gatewaydb-mcp-bench-bridge-1"),
@@ -160,8 +170,9 @@ print(json.dumps({
 PY
 )
 
-BRIDGE_CFG_JSON=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' gatewaydb-mcp-bench-bridge-1 | python3 - <<'PY'
-import json, sys
+BRIDGE_ENV_RAW=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' gatewaydb-mcp-bench-bridge-1)
+BRIDGE_CFG_JSON=$(BRIDGE_ENV_RAW="$BRIDGE_ENV_RAW" python3 - <<'PY'
+import json, os
 wanted = {
   "SECURITY_READ_ONLY": "security_read_only",
   "SECURITY_ALLOWED_TABLES": "security_allowed_tables",
@@ -170,7 +181,7 @@ wanted = {
   "DB_TYPE": "db_type",
 }
 out = {v: "" for v in wanted.values()}
-for line in sys.stdin:
+for line in os.environ.get("BRIDGE_ENV_RAW", "").splitlines():
     line = line.strip()
     if "=" not in line:
         continue
@@ -259,20 +270,16 @@ PY
   printf '%s\n' "$out_path"
 }
 
-WRITTEN=()
 if [[ "$SWEEP" -eq 1 ]]; then
   for target in direct gateway; do
     for vus in 1 10 50; do
-      p=$(run_one "$target" "$vus" "$ITERATIONS")
-      WRITTEN+=("$p")
+      run_one "$target" "$vus" "$ITERATIONS"
       echo "settle 5s…" >&2
       sleep 5
     done
   done
   echo >&2
-  echo "== sweep complete ==" >&2
-  printf '%s\n' "${WRITTEN[@]}"
+  echo "== sweep complete — see results/runs/index.jsonl ==" >&2
 else
-  p=$(run_one "$TARGET" "$VUS" "$ITERATIONS")
-  printf '%s\n' "$p"
+  run_one "$TARGET" "$VUS" "$ITERATIONS"
 fi
