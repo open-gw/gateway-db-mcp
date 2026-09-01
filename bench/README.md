@@ -164,11 +164,12 @@ such artifacts so far; they belong in the paper's threats-to-validity discussion
    (41% of median, past the 25% outlier threshold). A prior run hit 5.7 GiB and
    aborted on k6's 10-minute ceiling. The harness now sets
    `MEMORY_MAX_TRACES=10000` (and `--memory.max-traces=10000`), restarts Jaeger
-   before every governed run/repeat (stopping the collector first and draining
-   Kong's OTLP buffer into a disposable store so the empty-store preflight is
-   not raced by a flush), refuses starts when Jaeger RSS exceeds
-   `JAEGER_MEM_LIMIT_MB` (default 1024) or residual `kong-bench` traces remain,
-   and raises `maxDuration` to 30m so a merely-slow run is not discarded.
+   before every governed run/repeat (stopping the collector first, draining
+   Kong's OTLP buffer into a disposable store, and bouncing Kong so a leftover
+   queue cannot refill the store), refuses starts when Jaeger RSS exceeds
+   `JAEGER_MEM_LIMIT_MB` (default 1024) or `JAEGER_MEM_START_MAX_MB` (default 64)
+   after seeding, or residual `kong-bench` traces remain, and raises
+   `maxDuration` to 30m so a merely-slow run is not discarded.
 
 ### E3 — reproducibility
 
