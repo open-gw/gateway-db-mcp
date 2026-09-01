@@ -14,12 +14,18 @@ ITERATIONS=""
 NOTE=""
 FORCE=0
 SWEEP=0
+ALLOW_EXTRA=0
+
+# Default E1 latency set. Anything in EXTRA contending on the Docker VM
+# invalidates a citable latency measurement unless --allow-extra-containers.
+LATENCY_SERVICES=(mysql-a bridge keycloak kong otel-collector jaeger)
+EXTRA_SERVICES=(mysql-b bridge-b postgres bridge-pg)
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/run-benchmark.sh --target direct|gateway --vus N --iterations N [--note TEXT] [--force]
-  ./scripts/run-benchmark.sh --sweep --iterations N [--note TEXT] [--force]
+  ./scripts/run-benchmark.sh --target direct|gateway --vus N --iterations N [--note TEXT] [--force] [--allow-extra-containers]
+  ./scripts/run-benchmark.sh --sweep --iterations N [--note TEXT] [--force] [--allow-extra-containers]
 EOF
   exit 2
 }
@@ -32,6 +38,7 @@ while [[ $# -gt 0 ]]; do
     --note) NOTE="${2:-}"; shift 2 ;;
     --force) FORCE=1; shift ;;
     --sweep) SWEEP=1; shift ;;
+    --allow-extra-containers) ALLOW_EXTRA=1; shift ;;
     -h|--help) usage ;;
     *) echo "Unknown arg: $1" >&2; usage ;;
   esac
@@ -77,8 +84,40 @@ for c in gatewaydb-mcp-bench-bridge-1 gatewaydb-mcp-bench-kong-1 \
   require_healthy "$c" || bad=1
 done
 if [[ "$bad" -ne 0 ]]; then
-  echo "Start the stack: docker compose -f docker-compose.bench.yml up -d" >&2
+  echo "Start the latency stack: docker compose -f docker-compose.bench.yml up -d" >&2
+  echo "(Do not enable --profile extra for E1 — those services contend for CPU.)" >&2
   exit 1
+fi
+
+# ── refuse E3/E4 containers during latency measurement ───────────────────────
+# mapfile / running service names from compose
+running_services=$("${COMPOSE[@]}" ps --status running --format '{{.Service}}' 2>/dev/null | sort -u || true)
+CONTAINERS_RUNNING_JSON=$(printf '%s\n' "$running_services" | python3 -c '
+import json, sys
+names = sorted({ln.strip() for ln in sys.stdin if ln.strip()})
+print(json.dumps(names))
+')
+
+extra_running=()
+for svc in "${EXTRA_SERVICES[@]}"; do
+  if printf '%s\n' "$running_services" | grep -qx "$svc"; then
+    extra_running+=("$svc")
+  fi
+done
+
+if [[ ${#extra_running[@]} -gt 0 && "$ALLOW_EXTRA" -ne 1 ]]; then
+  echo "REFUSE: containers outside the latency set are running:" >&2
+  printf '  %s\n' "${extra_running[@]}" >&2
+  echo "These belong to Compose profile 'extra' (E3/E4). They contend for the" >&2
+  echo "same Docker VM CPUs as bridge/Kong/k6 and invalidate the gateway-cost" >&2
+  echo "delta. Stop them with:" >&2
+  echo "  docker compose -f docker-compose.bench.yml --profile extra stop mysql-b bridge-b postgres bridge-pg" >&2
+  echo "Or pass --allow-extra-containers to override (not for paper figures)." >&2
+  exit 1
+fi
+if [[ ${#extra_running[@]} -gt 0 && "$ALLOW_EXTRA" -eq 1 ]]; then
+  echo "WARNING: extra containers running (${extra_running[*]}); continuing because --allow-extra-containers was set." >&2
+  echo "WARNING: paper figures must not cite runs taken under E3/E4 contention." >&2
 fi
 
 # ── git provenance ───────────────────────────────────────────────────────────
@@ -216,7 +255,7 @@ run_one() {
   meta=$(
     export RUN_ID="$run_id" TS="$ts_iso" TARGET="$target" VUS="$vus" ITER="$iterations"
     export GIT_COMMIT GIT_DIRTY GIT_BRANCH K6_VERSION NOTE
-    export IMAGES_JSON HOST_JSON BRIDGE_CFG_JSON
+    export IMAGES_JSON HOST_JSON BRIDGE_CFG_JSON CONTAINERS_RUNNING_JSON
     python3 - <<'PY'
 import json, os
 print(json.dumps({
@@ -232,6 +271,7 @@ print(json.dumps({
   "images": json.loads(os.environ["IMAGES_JSON"]),
   "host": json.loads(os.environ["HOST_JSON"]),
   "bridge_config": json.loads(os.environ["BRIDGE_CFG_JSON"]),
+  "containers_running": json.loads(os.environ["CONTAINERS_RUNNING_JSON"]),
   "notes": os.environ.get("NOTE", ""),
 }, separators=(",", ":")))
 PY

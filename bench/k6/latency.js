@@ -18,6 +18,7 @@
 
 import http from 'k6/http';
 import { check } from 'k6';
+import exec from 'k6/execution';
 import { Trend } from 'k6/metrics';
 
 const TARGET = __ENV.TARGET || 'direct';
@@ -38,6 +39,50 @@ const T = {
   get_rows:    new Trend('ep_get_rows', true),
   run_query:   new Trend('ep_run_query', true),
 };
+
+// Wall-clock marks for the main scenario. Every main iteration records
+// scenario.startTime and Date.now(); handleSummary uses (max - min) as the
+// measured-phase duration. Sanity-check against the k6 console "main" elapsed
+// time — they should agree within a few hundred ms.
+const mainWallMark = new Trend('main_wall_mark_ms', false);
+
+// Endpoint steps exercised once per iteration. Length is requests_per_iteration
+// — keep this array as the single source of truth for that count.
+const ENDPOINT_STEPS = [
+  {
+    trend: T.list_tables,
+    checkName: 'list_tables 200',
+    run: (h) => http.get(`${BASE}/tables`, { headers: h, tags: { ep: 'list_tables' } }),
+  },
+  {
+    trend: T.describe,
+    checkName: 'describe_schema 200',
+    run: (h) => http.get(`${BASE}/tables/orders/schema`, {
+      headers: h, tags: { ep: 'describe_schema' },
+    }),
+  },
+  {
+    trend: T.get_rows,
+    checkName: 'get_rows 200',
+    run: (h) => http.get(`${BASE}/tables/orders/rows?limit=100`, {
+      headers: h, tags: { ep: 'get_rows' },
+    }),
+  },
+  {
+    trend: T.run_query,
+    checkName: 'run_query 200',
+    run: (h) => http.post(
+      `${BASE}/query`,
+      JSON.stringify({
+        sql: 'SELECT id,status,total FROM orders WHERE status=?',
+        params: ['completed'],
+      }),
+      { headers: h, tags: { ep: 'run_query' } },
+    ),
+  },
+];
+
+const REQUESTS_PER_ITERATION = ENDPOINT_STEPS.length;
 
 export const options = {
   scenarios: {
@@ -63,8 +108,13 @@ export const options = {
   },
   thresholds: {
     // Correctness gate, not a performance gate. A run with failures is not a
-    // measurement.
+    // measurement. Thresholds on {phase:main} also force k6 to materialise the
+    // filtered series into the summary JSON (required for Trend sub-metrics).
     'checks{phase:main}': ['rate>0.99'],
+    'ep_list_tables{phase:main}':     ['p(99)<60000'],
+    'ep_describe_schema{phase:main}': ['p(99)<60000'],
+    'ep_get_rows{phase:main}':        ['p(99)<60000'],
+    'ep_run_query{phase:main}':       ['p(99)<60000'],
   },
   summaryTrendStats: ['avg', 'min', 'med', 'p(95)', 'p(99)', 'max', 'count'],
 };
@@ -91,26 +141,21 @@ function hdrs(data) {
 
 export function workload(data) {
   const h = hdrs(data);
+  // Scenario tags do not flow onto custom Trend.add() samples — tag explicitly
+  // so warmup and main never share a measured series.
+  const phase = exec.scenario.name === 'main' ? 'main' : 'warmup';
+  const phaseTag = { phase };
 
-  let r = http.get(`${BASE}/tables`, { headers: h, tags: { ep: 'list_tables' } });
-  check(r, { 'list_tables 200': (x) => x.status === 200 });
-  T.list_tables.add(r.timings.duration);
+  if (phase === 'main') {
+    mainWallMark.add(exec.scenario.startTime);
+    mainWallMark.add(Date.now());
+  }
 
-  r = http.get(`${BASE}/tables/orders/schema`, { headers: h, tags: { ep: 'describe_schema' } });
-  check(r, { 'describe_schema 200': (x) => x.status === 200 });
-  T.describe.add(r.timings.duration);
-
-  r = http.get(`${BASE}/tables/orders/rows?limit=100`, { headers: h, tags: { ep: 'get_rows' } });
-  check(r, { 'get_rows 200': (x) => x.status === 200 });
-  T.get_rows.add(r.timings.duration);
-
-  r = http.post(
-    `${BASE}/query`,
-    JSON.stringify({ sql: 'SELECT id,status,total FROM orders WHERE status=?', params: ['completed'] }),
-    { headers: h, tags: { ep: 'run_query' } }
-  );
-  check(r, { 'run_query 200': (x) => x.status === 200 });
-  T.run_query.add(r.timings.duration);
+  for (const step of ENDPOINT_STEPS) {
+    const r = step.run(h);
+    check(r, { [step.checkName]: (x) => x.status === 200 });
+    step.trend.add(r.timings.duration, phaseTag);
+  }
 }
 
 // k6 requires a default export even when every scenario names an exec function.
@@ -134,9 +179,31 @@ export function handleSummary(summary) {
     }
   }
 
+  // Measured-phase throughput: ITERATIONS × requests_per_iteration / main wall
+  // duration. Do NOT use http_reqs.rate — that divides by the full test window
+  // (warmup + gap + main + graceful stop).
+  const mark = (summary.metrics || {}).main_wall_mark_ms;
+  const markVals = mark && mark.values ? mark.values : null;
+  let mainDurationS = null;
+  let throughputMeasured = null;
+  if (markVals && markVals.max != null && markVals.min != null && markVals.max > markVals.min) {
+    mainDurationS = (markVals.max - markVals.min) / 1000.0;
+    throughputMeasured = (ITERATIONS * REQUESTS_PER_ITERATION) / mainDurationS;
+  }
+
+  const httpReqs = ((summary.metrics || {}).http_reqs || {}).values || {};
+  metadata.requests_per_iteration = REQUESTS_PER_ITERATION;
+  metadata.main_scenario_duration_s = mainDurationS;
+  metadata.throughput_measured = throughputMeasured;
+  metadata.throughput_wall = httpReqs.rate != null ? httpReqs.rate : null;
+  metadata.main_duration_method =
+    'main_wall_mark_ms Trend: max(Date.now|scenario.startTime) - min(...) over main iterations';
+
   const payload = Object.assign({}, summary, { run_metadata: metadata });
   return {
     [out]: JSON.stringify(payload, null, 2),
-    stdout: `\nWrote ${out}\n`,
+    stdout: `\nWrote ${out}\n`
+      + `main_scenario_duration_s=${mainDurationS}\n`
+      + `throughput_measured=${throughputMeasured}  throughput_wall=${metadata.throughput_wall}\n`,
   };
 }

@@ -3,9 +3,25 @@
 #
 # Same config against MySQL and PostgreSQL. Substantiates the "any JDBC" claim
 # that Reviewer 1 (minor comment 6) and Reviewer 2 both asked to be qualified.
+#
+# Brings up Compose profile `extra` (postgres, bridge-pg, …). Leave it running
+# if useful; do NOT run E1/latency while it is up — contention confounds the
+# gateway-cost measurement.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p results
+
+COMPOSE=(docker compose -f docker-compose.bench.yml)
+echo "== ensuring extra profile (postgres, bridge-pg) is up =="
+"${COMPOSE[@]}" --profile extra up -d postgres bridge-pg
+echo "Waiting for bridge-pg…"
+for i in $(seq 1 60); do
+  if curl -sf http://localhost:8083/health >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+curl -sf http://localhost:8083/health >/dev/null
 
 MY=http://localhost:8080
 PG=http://localhost:8083
@@ -40,3 +56,7 @@ if jq -e '(.components.schemas // .definitions) != null' results/openapi-mysql.j
 else
   echo "SKIP: generator does not emit .components.schemas or .definitions"
 fi
+
+echo
+echo "NOTE: profile extra may still be running. Stop it before E1:"
+echo "  docker compose -f docker-compose.bench.yml --profile extra stop"

@@ -54,9 +54,24 @@ historical only and must not be cited.
 
 ```bash
 cd bench
+# Latency stack only (6 services). Do NOT pass --profile extra for E1.
 docker compose -f docker-compose.bench.yml up -d --build
 docker compose -f docker-compose.bench.yml ps        # wait for healthy
 ```
+
+`mysql-b`, `bridge-b`, `postgres`, and `bridge-pg` live under Compose profile
+`extra`. They start only when E3/E4 bring them up. Running E1 while they are up
+is refused by `run-benchmark.sh` unless `--allow-extra-containers` is passed —
+those JVMs and databases contend for the same Docker VM CPUs as the bridge,
+Kong, and k6, and that contention is a plausible alternative explanation for
+any measured gateway cost.
+
+### Host resources (citable runs)
+
+Docker Desktop's VM allocation materially affects absolute numbers and can
+distort deltas when the VM is undersized. For citable runs, allocate **at least
+8 CPUs and 8 GB** to Docker. The allocation actually used is recorded per run in
+`run_metadata.host` (`docker_vm_cpus`, `docker_vm_memory_gb`).
 
 ### E1 — governance overhead
 
@@ -76,7 +91,11 @@ Writes `results/runs/<UTC>-<target>-vus<N>-iter<M>.json` and appends a line to
 `results/runs/index.jsonl`. Dirty git trees are refused unless `--force` is
 set (dirty runs must not be cited). The reported result is gateway minus
 direct, per endpoint, at p50/p95/p99. First 30 seconds are a discarded warmup
-scenario covering JIT, HikariCP pool fill, and Kong plugin compilation.
+scenario covering JIT, HikariCP pool fill, and Kong plugin compilation —
+warmup samples are tagged `{phase:warmup}` and are **not** included in the
+`{phase:main}` series the summariser reads. Throughput is reported as
+`throughput_measured` (main phase only) and `throughput_wall` (k6's full-window
+rate, reference only).
 
 ### E3 — reproducibility
 
@@ -84,9 +103,10 @@ scenario covering JIT, HikariCP pool fill, and Kong plugin compilation.
 ./scripts/e3-reproducibility.sh
 ```
 
-Identical config, identical schema, different rows. Passes when the two tool
-manifests are identical. This is what turns the paper's §4.1 scenario from a
-hypothetical into a result.
+Brings up profile `extra` itself. Identical config, identical schema, different
+rows. Passes when the two tool manifests are identical. This is what turns the
+paper's §4.1 scenario from a hypothetical into a result. Stop `extra` before
+returning to E1.
 
 ### E4 — cross-database
 
@@ -94,8 +114,9 @@ hypothetical into a result.
 ./scripts/e4-crossdb.sh
 ```
 
-Same config against MySQL and PostgreSQL. Type-mapping differences are expected;
-report them rather than suppressing them.
+Brings up profile `extra` itself. Same config against MySQL and PostgreSQL.
+Type-mapping differences are expected; report them rather than suppressing them.
+Stop `extra` before returning to E1.
 
 ### Security-layer verification
 
@@ -146,4 +167,6 @@ drew the objection in the first place.
   the cost of the plugin executing, not the cost of being throttled.
 - `db/schema.sql` must be reconciled with the existing `sidecar/init-mysql.sql`
   before E3 means anything. Identical schema is the premise of the experiment.
-- Run E1 with nothing else competing for CPU. Close the browser.
+- Run E1 with nothing else competing for CPU. Close the browser. Prefer ≥8 CPUs
+  / ≥8 GB for Docker Desktop; see Host resources above. Stop profile `extra`
+  before latency runs.
