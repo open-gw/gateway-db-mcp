@@ -118,7 +118,7 @@ export const options = {
       executor: 'shared-iterations',
       vus: VUS,
       iterations: ITERATIONS,
-      maxDuration: '10m',
+      maxDuration: '30m',
       startTime: '35s',
       tags: { phase: 'main' },
       exec: 'workload',

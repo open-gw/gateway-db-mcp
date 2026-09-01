@@ -109,9 +109,12 @@ VirtioFS, which contaminates latency measurements.
 
 The runner refuses to measure when preconditions fail: Jaeger/collector down on
 a governed target, collector export errors, traces not arriving at Jaeger,
-misconfigured `/db`/`/raw` routes, unexpected containers, or a dirty git tree.
-Each check is recorded in `run_metadata.preflight`. Aborted k6 runs are archived
-with `"status": "aborted"` and skipped by the summariser.
+Jaeger memory or residual traces after store reset, misconfigured `/db`/`/raw`
+routes, unexpected containers, or a dirty git tree. Each check is recorded in
+`run_metadata.preflight`. Aborted k6 runs are archived with `"status": "aborted"`
+and skipped by the summariser. Governed runs wipe Jaeger (collector stopped,
+OTLP buffer drained, store confirmed empty) before each repeat so every
+measurement starts from an empty, bounded in-memory store.
 
 Writes `results/runs/<UTC>-<target>-vus<N>-iter<M>[-rK].json` and appends a line to
 `results/runs/index.jsonl`. Dirty git trees are refused unless `--force` is
@@ -134,6 +137,39 @@ spread (`(max−min)/median > 0.25`) is flagged.
   governance cost even when the host is contended. That is the column the paper
   should lead with.
 - Absolute throughput is harness-bound. Cite deltas, not absolutes.
+
+#### Telemetry confounds
+
+In a governance benchmark the telemetry path is part of the system under test.
+Its own failure modes are indistinguishable from the effect being measured
+unless the harness verifies them independently. This harness has found four
+such artifacts so far; they belong in the paper's threats-to-validity discussion.
+
+1. **Response-write stall** — a ~40 ms delayed-ACK floor was attributed to the
+   bridge until Content-Length + a single write (and `TCP_NODELAY`) removed the
+   header/body split that triggered Nagle interaction on the return path.
+2. **Unrotated spans file** — the collector's file exporter appended JSONL to
+   `results/spans.jsonl` without rotation. Under load the file grew past 2 GB
+   and every flush crossed Docker Desktop's VirtioFS, contaminating latency.
+   Citable runs use `--no-span-file` / `collector-jaeger-only.yaml`.
+3. **Jaeger absent from the container set** — with Jaeger down, the collector
+   DNS-retried and dropped spans in large batches (~8,200 at a time),
+   back-pressuring the Kong OpenTelemetry plugin. Governed throughput collapsed
+   while the failure looked like "policy cost." Preflight now requires Jaeger
+   running, clean collector logs, and `kong-bench` appearing in
+   `/api/services` before k6 starts.
+4. **Unbounded Jaeger store** — `jaeger-all-in-one` defaults to an unbounded
+   in-memory span store. Three identical gateway runs (VU=1, 20k iterations)
+   measured 678 → 669 → 405 req/s as the store grew from fresh to ~40k traces
+   (41% of median, past the 25% outlier threshold). A prior run hit 5.7 GiB and
+   aborted on k6's 10-minute ceiling. The harness now sets
+   `MEMORY_MAX_TRACES=10000` (and `--memory.max-traces=10000`), restarts Jaeger
+   before every governed run/repeat (stopping the collector first, draining
+   Kong's OTLP buffer into a disposable store, and bouncing Kong so a leftover
+   queue cannot refill the store), refuses starts when Jaeger RSS exceeds
+   `JAEGER_MEM_LIMIT_MB` (default 1024) or `JAEGER_MEM_START_MAX_MB` (default 64)
+   after seeding, or residual `kong-bench` traces remain, and raises
+   `maxDuration` to 30m so a merely-slow run is not discarded.
 
 ### E3 — reproducibility
 

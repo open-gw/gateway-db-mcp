@@ -216,6 +216,14 @@ services:
     image: jaegertracing/all-in-one:1.62.0
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
+      # Bound the in-memory store. Without this the store grows unbounded and
+      # ingestion cost grows with it, making governed throughput a function of
+      # run ordering. Maps to --memory.max-traces (Jaeger v1 / all-in-one 1.62.0;
+      # viper AutomaticEnv: MEMORY_MAX_TRACES). See bench/README.md
+      # "Telemetry confounds".
+      MEMORY_MAX_TRACES: "10000"
+    # Belt-and-suspenders: same flag as argv in case env binding is skipped.
+    command: ["--memory.max-traces=10000"]
     ports:
       - "16686:16686"        # UI
     # Image has no shell/wget; preflight probes the UI HTTP API instead.
