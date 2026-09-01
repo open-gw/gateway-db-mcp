@@ -513,7 +513,7 @@ If you use gateway-db-mcp in research, please cite the archived software release
 ```
 
 A companion preprint is available on SSRN (Abstract ID 6763918, DOI 10.2139/ssrn.6763918):
-<https://ssrn.com/abstract=6763918>. The same preprint is cross-deposited on HAL as `hal-05622597`.
+<https://ssrn.com/abstract=6763918>.
 
 **No peer-reviewed version of this work has been published.** Please cite the Zenodo archive above.
 If a peer-reviewed version is published in future, this section will be updated and the preferred
