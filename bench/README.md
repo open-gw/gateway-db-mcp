@@ -112,9 +112,9 @@ a governed target, collector export errors, traces not arriving at Jaeger,
 Jaeger memory or residual traces after store reset, misconfigured `/db`/`/raw`
 routes, unexpected containers, or a dirty git tree. Each check is recorded in
 `run_metadata.preflight`. Aborted k6 runs are archived with `"status": "aborted"`
-and skipped by the summariser. Governed runs restart Jaeger (and recreate the
-collector with `--no-deps`) before each repeat so every measurement starts from
-an empty, bounded in-memory store.
+and skipped by the summariser. Governed runs wipe Jaeger (collector stopped,
+OTLP buffer drained, store confirmed empty) before each repeat so every
+measurement starts from an empty, bounded in-memory store.
 
 Writes `results/runs/<UTC>-<target>-vus<N>-iter<M>[-rK].json` and appends a line to
 `results/runs/index.jsonl`. Dirty git trees are refused unless `--force` is
@@ -164,7 +164,9 @@ such artifacts so far; they belong in the paper's threats-to-validity discussion
    (41% of median, past the 25% outlier threshold). A prior run hit 5.7 GiB and
    aborted on k6's 10-minute ceiling. The harness now sets
    `MEMORY_MAX_TRACES=10000` (and `--memory.max-traces=10000`), restarts Jaeger
-   before every governed run/repeat, refuses starts when Jaeger RSS exceeds
+   before every governed run/repeat (stopping the collector first and draining
+   Kong's OTLP buffer into a disposable store so the empty-store preflight is
+   not raced by a flush), refuses starts when Jaeger RSS exceeds
    `JAEGER_MEM_LIMIT_MB` (default 1024) or residual `kong-bench` traces remain,
    and raises `maxDuration` to 30m so a merely-slow run is not discarded.
 

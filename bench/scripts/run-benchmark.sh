@@ -308,42 +308,66 @@ sys.exit(0 if "kong-bench" not in flat else 1)
 PY
 }
 
-reset_jaeger_store() {
-  # Stop the collector first so it cannot flush buffered spans into the
-  # freshly restarted store (that race made the empty-store preflight flake).
-  local attempt
-  for attempt in 1 2; do
-    echo "Stopping otel-collector before jaeger reset (attempt $attempt)…" >&2
-    "${COMPOSE[@]}" stop otel-collector >/dev/null
-    # Brief pause so in-flight OTLP from Kong is dropped rather than queued
-    # against the new store.
-    sleep 2
-    echo "Restarting jaeger for empty in-memory store…" >&2
-    "${COMPOSE[@]}" restart jaeger
-    wait_jaeger_ui
-    if ! jaeger_store_empty_of_kong; then
-      echo "WARNING: kong-bench still present after jaeger restart; retrying…" >&2
-      continue
+start_otel_collector() {
+  echo "Starting otel-collector (--no-deps, recreate)…" >&2
+  "${COMPOSE[@]}" up -d --no-deps --force-recreate otel-collector >/dev/null
+  local deadline=$((SECONDS + 60))
+  until docker inspect -f '{{.State.Status}}' gatewaydb-mcp-bench-otel-collector-1 2>/dev/null | grep -qx running; do
+    if (( SECONDS >= deadline )); then
+      echo "REFUSE: otel-collector did not become running within 60s after start" >&2
+      exit 1
     fi
-    echo "Starting otel-collector after empty-store confirm (--no-deps, recreate)…" >&2
-    "${COMPOSE[@]}" up -d --no-deps --force-recreate otel-collector
-    local deadline=$((SECONDS + 60))
-    until docker inspect -f '{{.State.Status}}' gatewaydb-mcp-bench-otel-collector-1 2>/dev/null | grep -qx running; do
-      if (( SECONDS >= deadline )); then
-        echo "REFUSE: otel-collector did not become running within 60s after start" >&2
-        exit 1
-      fi
-      sleep 1
-    done
-    echo "settle ${JAEGER_RESET_SETTLE_S}s after jaeger reset…" >&2
-    sleep "$JAEGER_RESET_SETTLE_S"
-    if jaeger_store_empty_of_kong; then
-      return 0
-    fi
-    echo "WARNING: kong-bench appeared after collector start (buffered flush); resetting again…" >&2
+    sleep 1
   done
-  echo "REFUSE: jaeger store still contains kong-bench after reset" >&2
-  exit 1
+}
+
+# Stop collector, wipe Jaeger, confirm no kong-bench. Leaves collector stopped.
+wipe_jaeger_store() {
+  echo "Stopping otel-collector…" >&2
+  "${COMPOSE[@]}" stop otel-collector >/dev/null || true
+  sleep 2
+  echo "Restarting jaeger for empty in-memory store…" >&2
+  "${COMPOSE[@]}" restart jaeger
+  wait_jaeger_ui
+  jaeger_store_empty_of_kong
+}
+
+reset_jaeger_store() {
+  # Kong buffers OTLP while the collector is down. A single wipe then immediate
+  # collector start lets that buffer land in the fresh store and flakes the
+  # empty-store preflight. Drain the buffer into a disposable store, wipe
+  # again, then bring the collector up for measurement.
+  local JAEGER_DRAIN_S="${JAEGER_DRAIN_S:-3}"
+  if ! wipe_jaeger_store; then
+    echo "WARNING: kong-bench present after first wipe; retrying…" >&2
+    if ! wipe_jaeger_store; then
+      echo "REFUSE: jaeger store still contains kong-bench after reset" >&2
+      exit 1
+    fi
+  fi
+  echo "Draining Kong OTLP buffer into disposable Jaeger store (${JAEGER_DRAIN_S}s)…" >&2
+  start_otel_collector
+  sleep "$JAEGER_DRAIN_S"
+  if ! wipe_jaeger_store; then
+    echo "REFUSE: jaeger store still contains kong-bench after drain wipe" >&2
+    exit 1
+  fi
+  start_otel_collector
+  echo "settle ${JAEGER_RESET_SETTLE_S}s after jaeger reset…" >&2
+  sleep "$JAEGER_RESET_SETTLE_S"
+  if ! jaeger_store_empty_of_kong; then
+    echo "WARNING: residual kong-bench after settle; final wipe…" >&2
+    if ! wipe_jaeger_store; then
+      echo "REFUSE: jaeger store still contains kong-bench after final wipe" >&2
+      exit 1
+    fi
+    start_otel_collector
+    sleep 2
+  fi
+  if ! jaeger_store_empty_of_kong; then
+    echo "REFUSE: jaeger store not empty after reset (Kong still flushing)" >&2
+    exit 1
+  fi
 }
 
 # ── preflight ────────────────────────────────────────────────────────────────
@@ -400,69 +424,19 @@ def service_names(payload):
             flat.append(n["name"])
     return flat
 
-try:
-    code_db = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:8000/db/tables")
-    code_raw = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:8000/raw/tables")
-    if code_db != "401":
-        fail("routes_db_401", f"/db/tables without token returned {code_db}")
-    else:
-        pass_("routes_db_401")
-    if code_raw != "200":
-        fail("routes_raw_200", f"/raw/tables without token returned {code_raw}")
-    else:
-        pass_("routes_raw_200")
-except Exception as e:
-    fail("routes", str(e))
-
-pass_("no_extra_containers")
-
-if os.environ.get("GIT_DIRTY", "false").lower() == "true" and os.environ.get("FORCE", "0") != "1":
-    fail("git_clean", "working tree dirty")
-else:
-    pass_("git_clean")
-
-if target != "gateway":
-    for n in (
-        "jaeger_reset", "jaeger_running", "otel_collector_running",
-        "otel_collector_logs_clean", "jaeger_memory", "jaeger_trace_count",
-        "traces_arriving",
-    ):
-        skip(n)
-else:
+# For governed runs, empty-store gates must run before any other work that
+# gives Kong time to flush buffered OTLP into the fresh Jaeger store.
+if target == "gateway":
     pass_("jaeger_reset")
-
-    for cname, key in (
-        ("gatewaydb-mcp-bench-jaeger-1", "jaeger_running"),
-        ("gatewaydb-mcp-bench-otel-collector-1", "otel_collector_running"),
-    ):
-        try:
-            st = sh("docker", "inspect", "-f", "{{.State.Status}}", cname)
-            if st != "running":
-                fail(key, f"{cname} status={st} — governed runs without telemetry measure a broken exporter")
-            else:
-                pass_(key)
-        except Exception as e:
-            fail(key, f"{cname} missing: {e}")
-
     try:
-        logs = subprocess.check_output(
-            ["docker", "logs", "--since", "2m", "gatewaydb-mcp-bench-otel-collector-1"],
-            text=True, stderr=subprocess.STDOUT, timeout=30,
-        )
-        real = [ln for ln in logs.splitlines() if any(
-            tok in ln.lower() for tok in (
-                "dropping data", "no more retries left", "failed to",
-                "lookup jaeger", "connection refused", "no such host",
-            )
-        )]
-        if real:
-            fail("otel_collector_logs_clean", f"{len(real)} export error line(s); e.g. {real[-1][:160]}")
+        st = sh("docker", "inspect", "-f", "{{.State.Status}}", "gatewaydb-mcp-bench-jaeger-1")
+        if st != "running":
+            fail("jaeger_running", f"gatewaydb-mcp-bench-jaeger-1 status={st} — governed runs without telemetry measure a broken exporter")
         else:
-            pass_("otel_collector_logs_clean")
+            pass_("jaeger_running")
     except Exception as e:
-        fail("otel_collector_logs_clean", str(e))
+        fail("jaeger_running", f"gatewaydb-mcp-bench-jaeger-1 missing: {e}")
 
-    # Bound-store / empty-store gates — must run before traces_arriving seeds kong-bench.
     try:
         usage = sh(
             "docker", "stats", "--no-stream", "--format", "{{.MemUsage}}",
@@ -502,6 +476,62 @@ else:
             pass_("jaeger_trace_count")
     except Exception as e:
         fail("jaeger_trace_count", str(e))
+
+try:
+    code_db = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:8000/db/tables")
+    code_raw = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:8000/raw/tables")
+    if code_db != "401":
+        fail("routes_db_401", f"/db/tables without token returned {code_db}")
+    else:
+        pass_("routes_db_401")
+    if code_raw != "200":
+        fail("routes_raw_200", f"/raw/tables without token returned {code_raw}")
+    else:
+        pass_("routes_raw_200")
+except Exception as e:
+    fail("routes", str(e))
+
+pass_("no_extra_containers")
+
+if os.environ.get("GIT_DIRTY", "false").lower() == "true" and os.environ.get("FORCE", "0") != "1":
+    fail("git_clean", "working tree dirty")
+else:
+    pass_("git_clean")
+
+if target != "gateway":
+    for n in (
+        "jaeger_reset", "jaeger_running", "otel_collector_running",
+        "otel_collector_logs_clean", "jaeger_memory", "jaeger_trace_count",
+        "traces_arriving",
+    ):
+        skip(n)
+else:
+    try:
+        st = sh("docker", "inspect", "-f", "{{.State.Status}}", "gatewaydb-mcp-bench-otel-collector-1")
+        if st != "running":
+            fail("otel_collector_running", f"gatewaydb-mcp-bench-otel-collector-1 status={st} — governed runs without telemetry measure a broken exporter")
+        else:
+            pass_("otel_collector_running")
+    except Exception as e:
+        fail("otel_collector_running", f"gatewaydb-mcp-bench-otel-collector-1 missing: {e}")
+
+    try:
+        logs = subprocess.check_output(
+            ["docker", "logs", "--since", "2m", "gatewaydb-mcp-bench-otel-collector-1"],
+            text=True, stderr=subprocess.STDOUT, timeout=30,
+        )
+        real = [ln for ln in logs.splitlines() if any(
+            tok in ln.lower() for tok in (
+                "dropping data", "no more retries left", "failed to",
+                "lookup jaeger", "connection refused", "no such host",
+            )
+        )]
+        if real:
+            fail("otel_collector_logs_clean", f"{len(real)} export error line(s); e.g. {real[-1][:160]}")
+        else:
+            pass_("otel_collector_logs_clean")
+    except Exception as e:
+        fail("otel_collector_logs_clean", str(e))
 
     try:
         req = urllib.request.Request(
