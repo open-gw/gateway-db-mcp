@@ -1,0 +1,219 @@
+# GatewayDB-MCP evaluation harness.
+#
+# Adds a real gateway policy chain (Kong OSS + Keycloak + OpenTelemetry) and the
+# extra database instances needed for the reproducibility and cross-database
+# experiments. Everything here is Apache 2.0 or equivalent: no vendor account,
+# no cloud subscription, no enterprise licence, no benchmark-publication
+# restriction.
+#
+#   docker compose -f docker-compose.bench.yml up -d
+#   docker compose -f docker-compose.bench.yml --profile bench run --rm k6 run /scripts/latency.js
+#
+# Run from the bench/ directory. Build context is the repository root.
+
+name: gatewaydb-mcp-bench
+
+x-bridge-env: &bridge-env
+  SECURITY_READ_ONLY: "true"
+  SECURITY_ALLOWED_TABLES: orders,products,customers
+  SECURITY_MAX_ROWS: "500"
+  SECURITY_QUERY_TIMEOUT: "30"
+  API_TITLE: "Test DB MCP Bridge"
+
+x-bridge-build: &bridge-build
+  context: ..
+  dockerfile: sidecar/Dockerfile
+
+services:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Databases
+  # ─────────────────────────────────────────────────────────────────────────
+
+  mysql-a:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: testdb
+      MYSQL_USER: readonly_user
+      MYSQL_PASSWORD: readonlypassword
+    volumes:
+      - ./db/init-mysql-a.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpassword"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Identical schema, different rows. Exists solely for E3.
+  mysql-b:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: testdb
+      MYSQL_USER: readonly_user
+      MYSQL_PASSWORD: readonlypassword
+    volumes:
+      - ./db/init-mysql-b.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpassword"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: rootpassword
+      POSTGRES_DB: testdb
+      POSTGRES_USER: readonly_user
+    volumes:
+      - ./db/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U readonly_user -d testdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Bridge instances (one per database)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  bridge:
+    build: *bridge-build
+    environment:
+      <<: *bridge-env
+      DB_TYPE: mysql
+      DB_HOST: mysql-a
+      DB_PORT: "3306"
+      DB_DATABASE: testdb
+      DB_USERNAME: readonly_user
+      DB_PASSWORD: readonlypassword
+    ports:
+      - "8080:8080"          # direct path, the E1 baseline
+    depends_on:
+      mysql-a: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  bridge-b:
+    build: *bridge-build
+    environment:
+      <<: *bridge-env
+      DB_TYPE: mysql
+      DB_HOST: mysql-b
+      DB_PORT: "3306"
+      DB_DATABASE: testdb
+      DB_USERNAME: readonly_user
+      DB_PASSWORD: readonlypassword
+    ports:
+      - "8082:8080"
+    depends_on:
+      mysql-b: {condition: service_healthy}
+
+  bridge-pg:
+    build: *bridge-build
+    environment:
+      <<: *bridge-env
+      DB_TYPE: postgres
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: testdb
+      DB_USERNAME: readonly_user
+      DB_PASSWORD: rootpassword
+    ports:
+      - "8083:8080"
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Gateway policy chain
+  # ─────────────────────────────────────────────────────────────────────────
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Fixes the `iss` claim. kong/kong.yml keys off this exact string.
+      KC_HOSTNAME: http://keycloak:8080
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+    volumes:
+      - ./keycloak/realm-mcp.json:/opt/keycloak/data/import/realm-mcp.json:ro
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && echo -e 'GET /realms/mcp HTTP/1.1\\nHost: localhost\\nConnection: close\\n\\n' >&3 && cat <&3 | grep -q '200 OK'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  kong:
+    image: kong:3.12
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_LOG_LEVEL: notice
+      KONG_TRACING_INSTRUMENTATIONS: all
+      KONG_TRACING_SAMPLING_RATE: "1.0"
+    volumes:
+      - ./kong/kong.yml:/kong/kong.yml:ro
+    ports:
+      - "8000:8000"          # gateway path, the E1 treatment
+      - "8001:8001"
+    depends_on:
+      bridge: {condition: service_healthy}
+      keycloak: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Telemetry
+  # ─────────────────────────────────────────────────────────────────────────
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.113.0
+    command: ["--config=/etc/otel/collector.yaml"]
+    volumes:
+      - ./otel/collector.yaml:/etc/otel/collector.yaml:ro
+      - ./results:/output
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"        # UI
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Load generator (profile-gated so it does not start with the stack)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  k6:
+    image: grafana/k6:0.54.0
+    profiles: ["bench"]
+    volumes:
+      - ./k6:/scripts:ro
+      - ./results:/results
+    environment:
+      TARGET: ${TARGET:-direct}
+      VUS: ${VUS:-10}
+      ITERATIONS: ${ITERATIONS:-1000}
+      DIRECT_URL: http://bridge:8080
+      GATEWAY_URL: http://kong:8000/db
+      KEYCLOAK_URL: http://keycloak:8080
+    depends_on:
+      - kong

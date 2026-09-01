@@ -1,0 +1,48 @@
+_format_version: "3.0"
+_transform: true
+
+# `key` MUST equal the `iss` claim Keycloak stamps into the token, which is
+# fixed by KC_HOSTNAME in docker-compose.bench.yml. If you change that, change
+# this too or every request returns 401.
+consumers:
+  - username: mcp-agent
+
+jwt_secrets:
+  - consumer: mcp-agent
+    key: "http://keycloak:8080/realms/mcp"
+    algorithm: RS256
+    rsa_public_key: |
+        -----BEGIN PUBLIC KEY-----
+        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuKpq3V8AEsOkVvm/LfPf
+        vagv8l9PzDU3OR8aefUCdqN5DAAye+w2aExcVoGG8cNkT55XmO7AcQ86Kd34D+Jo
+        HEkPWmhW47wORMpMe/+CYag4hilo66jksQn8xGQQIXNRtty2XFTaIVZU0vYOLiM2
+        29HzKz4NGsm9xjqFRl0BmzfJu6NdbxHCJbjumrJAQE77zp4aNYr8d1spTDXNdYFJ
+        JXJ95LF7Vjr0/DdNSEr70tITidQwk+jo+2X0gncw7cecFm93spM0yAlu5PnSySDh
+        wHEJ62bIIRVy+zoFNGuuEpd2lwbSaVOgmHbGUoeP69PLafx1A78p37VFMLdAGOub
+        YwIDAQAB
+        -----END PUBLIC KEY-----
+
+services:
+  - name: bridge
+    url: http://bridge:8080
+    routes:
+      - name: bridge-route
+        paths:
+          - /db
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+      - name: rate-limiting
+        config:
+          # Far above the benchmark rate on purpose. We are measuring the cost
+          # of the plugin executing, not the cost of being throttled.
+          minute: 1000000
+          policy: local
+      - name: opentelemetry
+        config:
+          traces_endpoint: http://otel-collector:4318/v1/traces
+          resource_attributes:
+            service.name: kong-bench
