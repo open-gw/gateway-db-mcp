@@ -155,7 +155,7 @@ services:
       start_period: 30s
 
   kong:
-    image: kong:3.12
+    image: kong:3.9
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /kong/kong.yml
