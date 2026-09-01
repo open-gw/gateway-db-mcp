@@ -279,9 +279,7 @@ print(f"{val * mult:.3f}")
 PY
 }
 
-reset_jaeger_store() {
-  echo "Restarting jaeger for empty in-memory store…" >&2
-  "${COMPOSE[@]}" restart jaeger
+wait_jaeger_ui() {
   local deadline=$((SECONDS + 90))
   until curl -sf -o /dev/null "http://localhost:16686/" \
         && curl -sf -o /dev/null "http://localhost:16686/api/services"; do
@@ -291,20 +289,61 @@ reset_jaeger_store() {
     fi
     sleep 1
   done
-  # Bounce the collector without pulling Jaeger via depends_on, so exporter
-  # logs do not retain connection-refused noise from the Jaeger restart window.
-  echo "Refreshing otel-collector after jaeger reset (--no-deps)…" >&2
-  "${COMPOSE[@]}" up -d --no-deps --force-recreate otel-collector
-  deadline=$((SECONDS + 60))
-  until docker inspect -f '{{.State.Status}}' gatewaydb-mcp-bench-otel-collector-1 2>/dev/null | grep -qx running; do
-    if (( SECONDS >= deadline )); then
-      echo "REFUSE: otel-collector did not become running within 60s after recreate" >&2
-      exit 1
+}
+
+# True when /api/services has no kong-bench (store empty of governed traces).
+jaeger_store_empty_of_kong() {
+  python3 - <<'PY'
+import json, sys, urllib.request
+with urllib.request.urlopen("http://localhost:16686/api/services", timeout=15) as resp:
+    payload = json.loads(resp.read().decode())
+names = payload if isinstance(payload, list) else payload.get("data", payload)
+flat = []
+for n in (names or []):
+    if isinstance(n, str):
+        flat.append(n)
+    elif isinstance(n, dict) and "name" in n:
+        flat.append(n["name"])
+sys.exit(0 if "kong-bench" not in flat else 1)
+PY
+}
+
+reset_jaeger_store() {
+  # Stop the collector first so it cannot flush buffered spans into the
+  # freshly restarted store (that race made the empty-store preflight flake).
+  local attempt
+  for attempt in 1 2; do
+    echo "Stopping otel-collector before jaeger reset (attempt $attempt)…" >&2
+    "${COMPOSE[@]}" stop otel-collector >/dev/null
+    # Brief pause so in-flight OTLP from Kong is dropped rather than queued
+    # against the new store.
+    sleep 2
+    echo "Restarting jaeger for empty in-memory store…" >&2
+    "${COMPOSE[@]}" restart jaeger
+    wait_jaeger_ui
+    if ! jaeger_store_empty_of_kong; then
+      echo "WARNING: kong-bench still present after jaeger restart; retrying…" >&2
+      continue
     fi
-    sleep 1
+    echo "Starting otel-collector after empty-store confirm (--no-deps, recreate)…" >&2
+    "${COMPOSE[@]}" up -d --no-deps --force-recreate otel-collector
+    local deadline=$((SECONDS + 60))
+    until docker inspect -f '{{.State.Status}}' gatewaydb-mcp-bench-otel-collector-1 2>/dev/null | grep -qx running; do
+      if (( SECONDS >= deadline )); then
+        echo "REFUSE: otel-collector did not become running within 60s after start" >&2
+        exit 1
+      fi
+      sleep 1
+    done
+    echo "settle ${JAEGER_RESET_SETTLE_S}s after jaeger reset…" >&2
+    sleep "$JAEGER_RESET_SETTLE_S"
+    if jaeger_store_empty_of_kong; then
+      return 0
+    fi
+    echo "WARNING: kong-bench appeared after collector start (buffered flush); resetting again…" >&2
   done
-  echo "settle ${JAEGER_RESET_SETTLE_S}s after jaeger reset…" >&2
-  sleep "$JAEGER_RESET_SETTLE_S"
+  echo "REFUSE: jaeger store still contains kong-bench after reset" >&2
+  exit 1
 }
 
 # ── preflight ────────────────────────────────────────────────────────────────
