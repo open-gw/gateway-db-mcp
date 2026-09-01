@@ -219,10 +219,28 @@ export function handleSummary(summary) {
   metadata.main_duration_method =
     'main_wall_mark_ms Trend: max(Date.now|scenario.startTime) - min(...) over main iterations';
 
-  const payload = Object.assign({}, summary, { run_metadata: metadata });
+  // Completeness: measured-phase count must equal ITERATIONS and duration must exist.
+  const mainList = ((summary.metrics || {})['ep_list_tables{phase:main}'] || {}).values || {};
+  const mainCount = mainList.count != null ? mainList.count : null;
+  let status = 'complete';
+  let abortReason = null;
+  if (mainDurationS == null) {
+    status = 'aborted';
+    abortReason = 'main_scenario_duration_s is null (warmup-only or interrupted)';
+  } else if (mainCount !== ITERATIONS) {
+    status = 'aborted';
+    abortReason = `ep_list_tables{phase:main}.count=${mainCount} != ITERATIONS=${ITERATIONS}`;
+  }
+  metadata.status = status;
+  if (abortReason) metadata.abort_reason = abortReason;
+
+  const payload = Object.assign({}, summary, {
+    run_metadata: metadata,
+    status: status,
+  });
   return {
     [out]: JSON.stringify(payload, null, 2),
-    stdout: `\nWrote ${out}\n`
+    stdout: `\nWrote ${out} status=${status}\n`
       + `main_scenario_duration_s=${mainDurationS}\n`
       + `throughput_measured=${throughputMeasured}  throughput_wall=${metadata.throughput_wall}\n`,
   };

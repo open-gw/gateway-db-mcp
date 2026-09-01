@@ -88,26 +88,40 @@ Three arms isolate what the paper is about:
 this harness is a property of the harness; only the deltas transfer.
 
 ```bash
-# Single run (immutable path under results/runs/)
-./scripts/run-benchmark.sh --target direct      --vus 10 --iterations 5000
-./scripts/run-benchmark.sh --target passthrough --vus 10 --iterations 5000
-./scripts/run-benchmark.sh --target gateway     --vus 10 --iterations 5000 --note "post stall fix"
+# Single run (immutable path under results/runs/); 3 repeats by default
+./scripts/run-benchmark.sh --target direct      --vus 10 --iterations 5000 --no-span-file
+./scripts/run-benchmark.sh --target passthrough --vus 10 --iterations 5000 --no-span-file
+./scripts/run-benchmark.sh --target gateway     --vus 10 --iterations 5000 --no-span-file \
+  --note "post-hardening"
 
-# Full VU sweep (three targets × 1,10,50)
-./scripts/run-benchmark.sh --sweep --iterations 5000
+# Full VU sweep (three targets × 1,10,50 × repeats)
+./scripts/run-benchmark.sh --sweep --iterations 5000 --no-span-file --repeats 3
 
 # Paste-ready three-arm decomposition with provenance footer
-./scripts/summarise-runs.py --latest --format markdown
+./scripts/summarise-runs.py --latest --format markdown --repeats 3
 ```
 
-Writes `results/runs/<UTC>-<target>-vus<N>-iter<M>.json` and appends a line to
+**Citable latency runs should pass `--no-span-file`.** That starts the collector
+with only the Jaeger exporter (see `collector-jaeger-only.yaml`). The file
+exporter in `collector.yaml` exists for E3 span comparison only — it appends to
+`results/spans.jsonl` without rotation and on Docker Desktop every flush crosses
+VirtioFS, which contaminates latency measurements.
+
+The runner refuses to measure when preconditions fail: Jaeger/collector down on
+a governed target, collector export errors, traces not arriving at Jaeger,
+misconfigured `/db`/`/raw` routes, unexpected containers, or a dirty git tree.
+Each check is recorded in `run_metadata.preflight`. Aborted k6 runs are archived
+with `"status": "aborted"` and skipped by the summariser.
+
+Writes `results/runs/<UTC>-<target>-vus<N>-iter<M>[-rK].json` and appends a line to
 `results/runs/index.jsonl`. Dirty git trees are refused unless `--force` is
 set (dirty runs must not be cited). First 30 seconds are a discarded warmup
 scenario covering JIT, HikariCP pool fill, and Kong plugin compilation —
 warmup samples are tagged `{phase:warmup}` and are **not** included in the
 `{phase:main}` series the summariser reads. Throughput is reported as
 `throughput_measured` (main phase only) and `throughput_wall` (k6's full-window
-rate, reference only).
+rate, reference only). Figures across repeats are `median [min–max]`; wide
+spread (`(max−min)/median > 0.25`) is flagged.
 
 #### Interpreting latency and throughput
 

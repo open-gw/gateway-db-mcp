@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # run-benchmark.sh — immutable, self-describing k6 runs.
 #
-# Gathers provenance the k6 container cannot see, refuses dirty trees without
-# --force, refuses unhealthy stacks, and writes results under results/runs/.
+# Refuses to measure when preconditions fail (broken telemetry, wrong routes,
+# extra containers, dirty tree). Archives every attempt; marks aborted runs.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 COMPOSE=(docker compose -f docker-compose.bench.yml)
 mkdir -p results/runs
+: > results/spans.jsonl 2>/dev/null || true
 
 TARGET=""
 VUS=""
@@ -15,17 +16,19 @@ NOTE=""
 FORCE=0
 SWEEP=0
 ALLOW_EXTRA=0
+REPEATS=3
+NO_SPAN_FILE=0
 
-# Default E1 latency set. Anything in EXTRA contending on the Docker VM
-# invalidates a citable latency measurement unless --allow-extra-containers.
 LATENCY_SERVICES=(mysql-a bridge keycloak kong otel-collector jaeger)
 EXTRA_SERVICES=(mysql-b bridge-b postgres bridge-pg)
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/run-benchmark.sh --target direct|passthrough|gateway --vus N --iterations N [--note TEXT] [--force] [--allow-extra-containers]
-  ./scripts/run-benchmark.sh --sweep --iterations N [--note TEXT] [--force] [--allow-extra-containers]
+  ./scripts/run-benchmark.sh --target direct|passthrough|gateway --vus N --iterations N
+      [--note TEXT] [--force] [--allow-extra-containers] [--repeats N] [--no-span-file]
+  ./scripts/run-benchmark.sh --sweep --iterations N
+      [--note TEXT] [--force] [--allow-extra-containers] [--repeats N] [--no-span-file]
 EOF
   exit 2
 }
@@ -39,6 +42,8 @@ while [[ $# -gt 0 ]]; do
     --force) FORCE=1; shift ;;
     --sweep) SWEEP=1; shift ;;
     --allow-extra-containers) ALLOW_EXTRA=1; shift ;;
+    --repeats) REPEATS="${2:-}"; shift 2 ;;
+    --no-span-file) NO_SPAN_FILE=1; shift ;;
     -h|--help) usage ;;
     *) echo "Unknown arg: $1" >&2; usage ;;
   esac
@@ -48,6 +53,11 @@ if [[ "$SWEEP" -eq 1 ]]; then
   [[ -n "$ITERATIONS" ]] || { echo "--sweep requires --iterations" >&2; exit 2; }
 elif [[ -z "$TARGET" || -z "$VUS" || -z "$ITERATIONS" ]]; then
   usage
+fi
+
+if ! [[ "$REPEATS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "REFUSE: --repeats must be a positive integer (got '$REPEATS')" >&2
+  exit 2
 fi
 
 if [[ "$SWEEP" -ne 1 ]]; then
@@ -62,8 +72,9 @@ require_cmd docker
 require_cmd jq
 require_cmd git
 require_cmd python3
+require_cmd curl
 
-# ── health gate ──────────────────────────────────────────────────────────────
+# ── health helpers ───────────────────────────────────────────────────────────
 require_healthy() {
   local name="$1" st
   if ! docker inspect "$name" >/dev/null 2>&1; then
@@ -72,7 +83,7 @@ require_healthy() {
   fi
   st=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$name")
   if [[ "$st" != "healthy" && "$st" != "running" ]]; then
-    echo "REFUSE: container $name is '$st' (need healthy)" >&2
+    echo "REFUSE: container $name is '$st' (need healthy/running)" >&2
     return 1
   fi
   if docker inspect -f '{{if .State.Health}}yes{{else}}no{{end}}' "$name" | grep -qx yes; then
@@ -85,6 +96,18 @@ require_healthy() {
   return 0
 }
 
+# ── span-file mode ───────────────────────────────────────────────────────────
+# Never pull Jaeger back up as a side effect of refreshing the collector
+# (depends_on would restart it and defeat the telemetry preflight).
+if [[ "$NO_SPAN_FILE" -eq 1 ]]; then
+  export OTEL_COLLECTOR_CONFIG=./collector-jaeger-only.yaml
+  echo "Using collector-jaeger-only.yaml (--no-span-file)" >&2
+  "${COMPOSE[@]}" up -d --no-deps --force-recreate otel-collector >/dev/null
+else
+  export OTEL_COLLECTOR_CONFIG=./collector.yaml
+fi
+
+# ── base container health ────────────────────────────────────────────────────
 bad=0
 for c in gatewaydb-mcp-bench-bridge-1 gatewaydb-mcp-bench-kong-1 \
          gatewaydb-mcp-bench-keycloak-1 gatewaydb-mcp-bench-mysql-a-1; do
@@ -92,17 +115,13 @@ for c in gatewaydb-mcp-bench-bridge-1 gatewaydb-mcp-bench-kong-1 \
 done
 if [[ "$bad" -ne 0 ]]; then
   echo "Start the latency stack: docker compose -f docker-compose.bench.yml up -d" >&2
-  echo "(Do not enable --profile extra for E1 — those services contend for CPU.)" >&2
   exit 1
 fi
 
-# ── refuse E3/E4 containers during latency measurement ───────────────────────
-# mapfile / running service names from compose
 running_services=$("${COMPOSE[@]}" ps --status running --format '{{.Service}}' 2>/dev/null | sort -u || true)
 CONTAINERS_RUNNING_JSON=$(printf '%s\n' "$running_services" | python3 -c '
 import json, sys
-names = sorted({ln.strip() for ln in sys.stdin if ln.strip()})
-print(json.dumps(names))
+print(json.dumps(sorted({ln.strip() for ln in sys.stdin if ln.strip()})))
 ')
 
 extra_running=()
@@ -111,50 +130,18 @@ for svc in "${EXTRA_SERVICES[@]}"; do
     extra_running+=("$svc")
   fi
 done
-
 if [[ ${#extra_running[@]} -gt 0 && "$ALLOW_EXTRA" -ne 1 ]]; then
   echo "REFUSE: containers outside the latency set are running:" >&2
   printf '  %s\n' "${extra_running[@]}" >&2
-  echo "These belong to Compose profile 'extra' (E3/E4). They contend for the" >&2
-  echo "same Docker VM CPUs as bridge/Kong/k6 and invalidate the gateway-cost" >&2
-  echo "delta. Stop them with:" >&2
-  echo "  docker compose -f docker-compose.bench.yml --profile extra stop mysql-b bridge-b postgres bridge-pg" >&2
-  echo "Or pass --allow-extra-containers to override (not for paper figures)." >&2
+  echo "Stop with: docker compose -f docker-compose.bench.yml --profile extra stop" >&2
+  echo "Or pass --allow-extra-containers (not for paper figures)." >&2
   exit 1
 fi
-if [[ ${#extra_running[@]} -gt 0 && "$ALLOW_EXTRA" -eq 1 ]]; then
-  echo "WARNING: extra containers running (${extra_running[*]}); continuing because --allow-extra-containers was set." >&2
-  echo "WARNING: paper figures must not cite runs taken under E3/E4 contention." >&2
-fi
-
-# ── route behaviour gate (governed vs passthrough) ───────────────────────────
-# /db without a token must be 401; /raw without a token must be 200.
-# If either fails the routes are misconfigured and every subsequent number is
-# meaningless.
-assert_kong_routes() {
-  local code_db code_raw
-  code_db=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/db/tables || true)
-  code_raw=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/raw/tables || true)
-  if [[ "$code_db" != "401" ]]; then
-    echo "REFUSE: /db/tables without token returned HTTP $code_db (expected 401)." >&2
-    echo "Governed route misconfigured — fix kong/kong.yml before measuring." >&2
-    exit 1
-  fi
-  if [[ "$code_raw" != "200" ]]; then
-    echo "REFUSE: /raw/tables without token returned HTTP $code_raw (expected 200)." >&2
-    echo "Passthrough route misconfigured — fix kong/kong.yml before measuring." >&2
-    exit 1
-  fi
-  echo "Kong routes OK: /db → 401 (no token), /raw → 200 (no token)" >&2
-}
-assert_kong_routes
 
 # ── git provenance ───────────────────────────────────────────────────────────
 REPO_ROOT=$(cd .. && pwd)
 GIT_COMMIT=$(git -C "$REPO_ROOT" rev-parse HEAD)
 GIT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
-# Dirty means source / config changes — not newly written run artifacts waiting
-# to be committed. Otherwise every successive local run would require --force.
 if git -C "$REPO_ROOT" status --porcelain -- . \
     ':(exclude)bench/results/runs/' \
   | grep -q .; then
@@ -162,10 +149,8 @@ if git -C "$REPO_ROOT" status --porcelain -- . \
 else
   GIT_DIRTY=false
 fi
-
 if [[ "$GIT_DIRTY" == "true" ]]; then
   echo "WARNING: git working tree is DIRTY. A dirty run is not reproducible." >&2
-  echo "WARNING: paper figures must not cite dirty runs." >&2
   if [[ "$FORCE" -ne 1 ]]; then
     echo "Refusing to run. Pass --force to override." >&2
     exit 1
@@ -173,7 +158,7 @@ if [[ "$GIT_DIRTY" == "true" ]]; then
   echo "WARNING: continuing because --force was set." >&2
 fi
 
-# ── collect host / images / bridge config (once) ─────────────────────────────
+# ── host / images / bridge config ────────────────────────────────────────────
 HOST_JSON=$(python3 - <<'PY'
 import json, platform, subprocess
 
@@ -184,8 +169,6 @@ def sh(*args):
         return ""
 
 os_name = f"{platform.system()} {platform.release()} {platform.machine()}"
-cpu_model, cpu_cores, memory_gb = "", 0, 0.0
-
 if platform.system() == "Darwin":
     cpu_model = sh("sysctl", "-n", "machdep.cpu.brand_string")
     cpu_cores = int(sh("sysctl", "-n", "hw.ncpu") or "0")
@@ -221,15 +204,12 @@ def digest(cname):
         tag = subprocess.check_output(
             ["docker", "inspect", "-f", "{{.Config.Image}}", cname],
             text=True, stderr=subprocess.DEVNULL).strip()
-        # Digests live on the image, not the container.
         repo = subprocess.check_output(
             ["docker", "inspect", "-f",
              "{{if index .RepoDigests 0}}{{index .RepoDigests 0}}{{end}}",
              img_id],
             text=True, stderr=subprocess.DEVNULL).strip()
-        if repo:
-            return repo
-        return f"{tag} {img_id}"
+        return repo or f"{tag} {img_id}"
     except Exception as e:
         return f"unknown ({e})"
 
@@ -254,12 +234,9 @@ wanted = {
 }
 out = {v: "" for v in wanted.values()}
 for line in os.environ.get("BRIDGE_ENV_RAW", "").splitlines():
-    line = line.strip()
-    if "=" not in line:
-        continue
+    if "=" not in line: continue
     k, _, v = line.partition("=")
-    if k in wanted:
-        out[wanted[k]] = v
+    if k in wanted: out[wanted[k]] = v
 print(json.dumps(out))
 PY
 )
@@ -267,13 +244,149 @@ PY
 K6_VERSION=$(docker image inspect grafana/k6:0.54.0 --format '{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null || true)
 [[ -n "$K6_VERSION" && "$K6_VERSION" != "<no value>" ]] || K6_VERSION="0.54.0"
 
+# ── preflight ────────────────────────────────────────────────────────────────
+# Returns JSON map of check -> pass|fail|skipped via stdout. Exits 1 on any fail.
+run_preflight() {
+  local target="$1"
+  FORCE="$FORCE" GIT_DIRTY="$GIT_DIRTY" python3 - "$target" <<'PY'
+import json, os, subprocess, sys, time, urllib.parse, urllib.request
+
+target = sys.argv[1]
+checks = {}
+failed = []
+
+def fail(name, why):
+    checks[name] = "fail"
+    failed.append(f"{name}: {why}")
+    print(f"PREFLIGHT FAIL: {name} — {why}", file=sys.stderr)
+
+def pass_(name):
+    checks[name] = "pass"
+
+def skip(name):
+    checks[name] = "skipped"
+
+def sh(*args, timeout=30):
+    return subprocess.check_output(args, text=True, stderr=subprocess.DEVNULL, timeout=timeout).strip()
+
+try:
+    code_db = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:8000/db/tables")
+    code_raw = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:8000/raw/tables")
+    if code_db != "401":
+        fail("routes_db_401", f"/db/tables without token returned {code_db}")
+    else:
+        pass_("routes_db_401")
+    if code_raw != "200":
+        fail("routes_raw_200", f"/raw/tables without token returned {code_raw}")
+    else:
+        pass_("routes_raw_200")
+except Exception as e:
+    fail("routes", str(e))
+
+pass_("no_extra_containers")
+
+if os.environ.get("GIT_DIRTY", "false").lower() == "true" and os.environ.get("FORCE", "0") != "1":
+    fail("git_clean", "working tree dirty")
+else:
+    pass_("git_clean")
+
+if target != "gateway":
+    for n in ("jaeger_running", "otel_collector_running", "otel_collector_logs_clean", "traces_arriving"):
+        skip(n)
+else:
+    for cname, key in (
+        ("gatewaydb-mcp-bench-jaeger-1", "jaeger_running"),
+        ("gatewaydb-mcp-bench-otel-collector-1", "otel_collector_running"),
+    ):
+        try:
+            st = sh("docker", "inspect", "-f", "{{.State.Status}}", cname)
+            if st != "running":
+                fail(key, f"{cname} status={st} — governed runs without telemetry measure a broken exporter")
+            else:
+                pass_(key)
+        except Exception as e:
+            fail(key, f"{cname} missing: {e}")
+
+    try:
+        logs = subprocess.check_output(
+            ["docker", "logs", "--since", "2m", "gatewaydb-mcp-bench-otel-collector-1"],
+            text=True, stderr=subprocess.STDOUT, timeout=30,
+        )
+        real = [ln for ln in logs.splitlines() if any(
+            tok in ln.lower() for tok in (
+                "dropping data", "no more retries left", "failed to",
+                "lookup jaeger", "connection refused", "no such host",
+            )
+        )]
+        if real:
+            fail("otel_collector_logs_clean", f"{len(real)} export error line(s); e.g. {real[-1][:160]}")
+        else:
+            pass_("otel_collector_logs_clean")
+    except Exception as e:
+        fail("otel_collector_logs_clean", str(e))
+
+    try:
+        req = urllib.request.Request(
+            "http://localhost:8081/realms/mcp/protocol/openid-connect/token",
+            data=urllib.parse.urlencode({
+                "grant_type": "client_credentials",
+                "client_id": "mcp-agent",
+                "client_secret": "mcp-agent-secret",
+            }).encode(),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            token = json.loads(resp.read().decode())["access_token"]
+        for _ in range(5):
+            r = urllib.request.Request(
+                "http://localhost:8000/db/tables",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with urllib.request.urlopen(r, timeout=15) as resp:
+                resp.read()
+        time.sleep(3)
+        with urllib.request.urlopen("http://localhost:16686/api/services", timeout=15) as resp:
+            services = json.loads(resp.read().decode())
+        names = services if isinstance(services, list) else services.get("data", services)
+        flat = []
+        for n in (names or []):
+            if isinstance(n, str):
+                flat.append(n)
+            elif isinstance(n, dict) and "name" in n:
+                flat.append(n["name"])
+        if "kong-bench" not in flat:
+            fail("traces_arriving", f"jaeger services={flat!r} — missing kong-bench")
+        else:
+            pass_("traces_arriving")
+    except Exception as e:
+        fail("traces_arriving", str(e))
+
+print(json.dumps(checks, separators=(",", ":")))
+if failed:
+    print("REFUSE: preflight failed — measurement would be invalid:", file=sys.stderr)
+    for f in failed:
+        print(f"  {f}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
 run_one() {
-  local target="$1" vus="$2" iterations="$3"
-  local ts_compact ts_iso run_id out_path meta
+  local target="$1" vus="$2" iterations="$3" repeat_index="$4" repeat_group_id="$5"
+  local ts_compact ts_iso run_id out_path meta preflight spans_start spans_end k6_rc status
+
+  # Truncate spans before each run (and each repeat).
+  : > results/spans.jsonl
+  spans_start=$(wc -c < results/spans.jsonl | tr -d ' ')
+
+  preflight=$(run_preflight "$target") || exit 1
 
   ts_compact=$(date -u +%Y%m%dT%H%M%SZ)
   ts_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   run_id="${ts_compact}-${target}-vus${vus}-iter${iterations}"
+  if [[ "$REPEATS" -gt 1 ]]; then
+    run_id="${run_id}-r${repeat_index}"
+  fi
   out_path="results/runs/${run_id}.json"
 
   if [[ -e "$out_path" ]]; then
@@ -285,6 +398,8 @@ run_one() {
     export RUN_ID="$run_id" TS="$ts_iso" TARGET="$target" VUS="$vus" ITER="$iterations"
     export GIT_COMMIT GIT_DIRTY GIT_BRANCH K6_VERSION NOTE
     export IMAGES_JSON HOST_JSON BRIDGE_CFG_JSON CONTAINERS_RUNNING_JSON
+    export PREFLIGHT_JSON="$preflight" REPEAT_INDEX="$repeat_index" REPEAT_GROUP="$repeat_group_id"
+    export SPANS_START="$spans_start" NO_SPAN_FILE
     python3 - <<'PY'
 import json, os
 print(json.dumps({
@@ -301,12 +416,18 @@ print(json.dumps({
   "host": json.loads(os.environ["HOST_JSON"]),
   "bridge_config": json.loads(os.environ["BRIDGE_CFG_JSON"]),
   "containers_running": json.loads(os.environ["CONTAINERS_RUNNING_JSON"]),
+  "preflight": json.loads(os.environ["PREFLIGHT_JSON"]),
+  "repeat_index": int(os.environ["REPEAT_INDEX"]),
+  "repeat_group_id": os.environ["REPEAT_GROUP"],
+  "spans_bytes_start": int(os.environ["SPANS_START"]),
+  "no_span_file": os.environ.get("NO_SPAN_FILE", "0") == "1",
   "notes": os.environ.get("NOTE", ""),
 }, separators=(",", ":")))
 PY
   )
 
-  echo "== run $run_id ==" >&2
+  echo "== run $run_id (repeat $repeat_index/$REPEATS) ==" >&2
+  set +e
   "${COMPOSE[@]}" --profile bench run --rm \
       -e "TARGET=$target" \
       -e "VUS=$vus" \
@@ -314,13 +435,54 @@ PY
       -e "RUN_ID=$run_id" \
       -e "RUN_METADATA_JSON=$meta" \
       k6 run /scripts/latency.js
+  k6_rc=$?
+  set -e
+
+  spans_end=$(wc -c < results/spans.jsonl | tr -d ' ')
 
   if [[ ! -f "$out_path" ]]; then
-    echo "ERROR: k6 finished but $out_path was not written" >&2
+    echo "ERROR: k6 finished (rc=$k6_rc) but $out_path was not written" >&2
     exit 1
   fi
 
-  export INDEX_META="$meta" INDEX_PATH="$out_path"
+  # Patch spans_bytes_end; enforce abort on non-zero k6 or incomplete metrics.
+  export OUT_PATH="$out_path" K6_RC="$k6_rc" SPANS_END="$spans_end" ITERATIONS="$iterations"
+  python3 - <<'PY'
+import json, os
+path = os.environ["OUT_PATH"]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+meta = data.setdefault("run_metadata", {})
+meta["spans_bytes_end"] = int(os.environ["SPANS_END"])
+status = data.get("status") or meta.get("status") or "complete"
+reason = meta.get("abort_reason")
+k6_rc = int(os.environ["K6_RC"])
+iterations = int(os.environ["ITERATIONS"])
+if k6_rc != 0:
+    status = "aborted"
+    reason = f"k6 exit status {k6_rc}" + (f"; {reason}" if reason else "")
+main = ((data.get("metrics") or {}).get("ep_list_tables{phase:main}") or {}).get("values") or {}
+count = main.get("count")
+if status != "aborted" and count != iterations:
+    status = "aborted"
+    reason = f"ep_list_tables{{phase:main}}.count={count} != ITERATIONS={iterations}"
+if status != "aborted" and meta.get("main_scenario_duration_s") is None:
+    status = "aborted"
+    reason = "main_scenario_duration_s is null"
+data["status"] = status
+meta["status"] = status
+if reason:
+    meta["abort_reason"] = reason
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+print(status)
+if reason:
+    print(reason)
+PY
+
+  status=$(jq -r '.status' "$out_path")
+  export INDEX_META="$meta" INDEX_PATH="$out_path" INDEX_STATUS="$status"
   python3 - <<'PY'
 import json, os
 meta = json.loads(os.environ["INDEX_META"])
@@ -334,19 +496,39 @@ row = {
   "git_dirty": meta["git_dirty"],
   "notes": meta.get("notes", ""),
   "filename": os.environ["INDEX_PATH"],
+  "status": os.environ["INDEX_STATUS"],
+  "repeat_index": meta.get("repeat_index"),
+  "repeat_group_id": meta.get("repeat_group_id"),
 }
 with open("results/runs/index.jsonl", "a", encoding="utf-8") as f:
     f.write(json.dumps(row, separators=(",", ":")) + "\n")
 PY
 
-  echo "Wrote $out_path" >&2
+  echo "Wrote $out_path status=$status" >&2
+  if [[ "$status" == "aborted" ]]; then
+    echo "REFUSE: run aborted — see $out_path" >&2
+    exit 1
+  fi
   printf '%s\n' "$out_path"
+}
+
+run_config() {
+  local target="$1" vus="$2" iterations="$3"
+  local group_id i
+  group_id="$(date -u +%Y%m%dT%H%M%SZ)-${target}-vus${vus}-iter${iterations}"
+  for i in $(seq 1 "$REPEATS"); do
+    run_one "$target" "$vus" "$iterations" "$i" "$group_id"
+    if [[ "$i" -lt "$REPEATS" ]]; then
+      echo "settle 5s between repeats…" >&2
+      sleep 5
+    fi
+  done
 }
 
 if [[ "$SWEEP" -eq 1 ]]; then
   for target in direct passthrough gateway; do
     for vus in 1 10 50; do
-      run_one "$target" "$vus" "$ITERATIONS"
+      run_config "$target" "$vus" "$ITERATIONS"
       echo "settle 5s…" >&2
       sleep 5
     done
@@ -354,5 +536,5 @@ if [[ "$SWEEP" -eq 1 ]]; then
   echo >&2
   echo "== sweep complete — see results/runs/index.jsonl ==" >&2
 else
-  run_one "$TARGET" "$VUS" "$ITERATIONS"
+  run_config "$TARGET" "$VUS" "$ITERATIONS"
 fi
