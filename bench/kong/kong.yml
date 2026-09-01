@@ -23,10 +23,11 @@ jwt_secrets:
         -----END PUBLIC KEY-----
 
 services:
-  - name: bridge
+  # Governed path: JWT + rate-limiting + OpenTelemetry. The E1 "gateway" arm.
+  - name: bridge-governed
     url: http://bridge:8080
     routes:
-      - name: bridge-route
+      - name: bridge-governed-route
         paths:
           - /db
         strip_path: true
@@ -46,3 +47,16 @@ services:
           traces_endpoint: http://otel-collector:4318/v1/traces
           resource_attributes:
             service.name: kong-bench
+
+  # Passthrough path: same Kong process, same upstream, ZERO plugins.
+  # bridge-passthrough must never gain a plugin — its entire purpose is to be
+  # the plugin-free control so (passthrough − direct) isolates proxy hop cost
+  # and (gateway − passthrough) isolates governance policy cost.
+  - name: bridge-passthrough
+    url: http://bridge:8080
+    routes:
+      - name: bridge-passthrough-route
+        paths:
+          - /raw
+        strip_path: true
+    # No plugins. Deliberately.

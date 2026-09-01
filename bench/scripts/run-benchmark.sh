@@ -24,7 +24,7 @@ EXTRA_SERVICES=(mysql-b bridge-b postgres bridge-pg)
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/run-benchmark.sh --target direct|gateway --vus N --iterations N [--note TEXT] [--force] [--allow-extra-containers]
+  ./scripts/run-benchmark.sh --target direct|passthrough|gateway --vus N --iterations N [--note TEXT] [--force] [--allow-extra-containers]
   ./scripts/run-benchmark.sh --sweep --iterations N [--note TEXT] [--force] [--allow-extra-containers]
 EOF
   exit 2
@@ -48,6 +48,13 @@ if [[ "$SWEEP" -eq 1 ]]; then
   [[ -n "$ITERATIONS" ]] || { echo "--sweep requires --iterations" >&2; exit 2; }
 elif [[ -z "$TARGET" || -z "$VUS" || -z "$ITERATIONS" ]]; then
   usage
+fi
+
+if [[ "$SWEEP" -ne 1 ]]; then
+  case "$TARGET" in
+    direct|passthrough|gateway) ;;
+    *) echo "REFUSE: --target must be direct|passthrough|gateway (got '$TARGET')" >&2; exit 2 ;;
+  esac
 fi
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing command: $1" >&2; exit 1; }; }
@@ -119,6 +126,28 @@ if [[ ${#extra_running[@]} -gt 0 && "$ALLOW_EXTRA" -eq 1 ]]; then
   echo "WARNING: extra containers running (${extra_running[*]}); continuing because --allow-extra-containers was set." >&2
   echo "WARNING: paper figures must not cite runs taken under E3/E4 contention." >&2
 fi
+
+# ── route behaviour gate (governed vs passthrough) ───────────────────────────
+# /db without a token must be 401; /raw without a token must be 200.
+# If either fails the routes are misconfigured and every subsequent number is
+# meaningless.
+assert_kong_routes() {
+  local code_db code_raw
+  code_db=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/db/tables || true)
+  code_raw=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/raw/tables || true)
+  if [[ "$code_db" != "401" ]]; then
+    echo "REFUSE: /db/tables without token returned HTTP $code_db (expected 401)." >&2
+    echo "Governed route misconfigured — fix kong/kong.yml before measuring." >&2
+    exit 1
+  fi
+  if [[ "$code_raw" != "200" ]]; then
+    echo "REFUSE: /raw/tables without token returned HTTP $code_raw (expected 200)." >&2
+    echo "Passthrough route misconfigured — fix kong/kong.yml before measuring." >&2
+    exit 1
+  fi
+  echo "Kong routes OK: /db → 401 (no token), /raw → 200 (no token)" >&2
+}
+assert_kong_routes
 
 # ── git provenance ───────────────────────────────────────────────────────────
 REPO_ROOT=$(cd .. && pwd)
@@ -315,7 +344,7 @@ PY
 }
 
 if [[ "$SWEEP" -eq 1 ]]; then
-  for target in direct gateway; do
+  for target in direct passthrough gateway; do
     for vus in 1 10 50; do
       run_one "$target" "$vus" "$ITERATIONS"
       echo "settle 5s…" >&2
