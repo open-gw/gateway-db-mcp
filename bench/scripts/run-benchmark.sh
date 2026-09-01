@@ -85,7 +85,11 @@ fi
 REPO_ROOT=$(cd .. && pwd)
 GIT_COMMIT=$(git -C "$REPO_ROOT" rev-parse HEAD)
 GIT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
-if git -C "$REPO_ROOT" status --porcelain | grep -q .; then
+# Dirty means source / config changes — not newly written run artifacts waiting
+# to be committed. Otherwise every successive local run would require --force.
+if git -C "$REPO_ROOT" status --porcelain -- . \
+    ':(exclude)bench/results/runs/' \
+  | grep -q .; then
   GIT_DIRTY=true
 else
   GIT_DIRTY=false
