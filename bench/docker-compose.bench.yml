@@ -6,8 +6,13 @@
 # no cloud subscription, no enterprise licence, no benchmark-publication
 # restriction.
 #
-#   docker compose -f docker-compose.bench.yml up -d
+#   docker compose -f docker-compose.bench.yml up -d                  # latency stack (default)
+#   docker compose -f docker-compose.bench.yml --profile extra up -d  # + E3/E4 services
 #   docker compose -f docker-compose.bench.yml --profile bench run --rm k6 run /scripts/latency.js
+#
+# Default services = E1 latency set. Profile `extra` = mysql-b, bridge-b, postgres,
+# bridge-pg (E3/E4 only). Do not run E1 while `extra` is up — those containers
+# contend for the same Docker VM CPUs and confound the gateway-cost delta.
 #
 # Run from the bench/ directory. Build context is the repository root.
 
@@ -46,9 +51,11 @@ services:
       timeout: 5s
       retries: 20
 
-  # Identical schema, different rows. Exists solely for E3.
+  # Identical schema, different rows. Exists solely for E3. Profile-gated so
+  # latency runs do not pay for a second MySQL + JVM on the same Docker VM.
   mysql-b:
     image: mysql:8.0
+    profiles: ["extra"]
     environment:
       MYSQL_ROOT_PASSWORD: rootpassword
       MYSQL_DATABASE: testdb
@@ -64,6 +71,7 @@ services:
   # is created SELECT-only in init-postgres.sql (mirrors MySQL Layer 1).
   postgres:
     image: postgres:16
+    profiles: ["extra"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: rootpassword
@@ -102,6 +110,7 @@ services:
 
   bridge-b:
     build: *bridge-build
+    profiles: ["extra"]
     environment:
       <<: *bridge-env
       DB_TYPE: mysql
@@ -117,6 +126,7 @@ services:
 
   bridge-pg:
     build: *bridge-build
+    profiles: ["extra"]
     environment:
       <<: *bridge-env
       DB_TYPE: postgres
@@ -187,7 +197,7 @@ services:
     image: otel/opentelemetry-collector-contrib:0.113.0
     command: ["--config=/etc/otel/collector.yaml"]
     volumes:
-      - ./otel/collector.yaml:/etc/otel/collector.yaml:ro
+      - ./collector.yaml:/etc/otel/collector.yaml:ro
       - ./results:/output
     depends_on:
       - jaeger

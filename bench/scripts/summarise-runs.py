@@ -3,6 +3,10 @@
 
 Standard library only. Never invents numbers: every figure comes from a file
 under results/runs/ with a run_metadata provenance block.
+
+Reads ep_*{phase:main} series only — unfiltered ep_* include warmup samples and
+must not be cited. Runs that predate phase tagging are refused, not silently
+re-parsed.
 """
 from __future__ import annotations
 
@@ -13,11 +17,12 @@ from pathlib import Path
 
 RUNS_DIR = Path(__file__).resolve().parent.parent / "results" / "runs"
 
+# (filtered metric key in summary JSON, display label)
 ENDPOINTS = [
-    ("ep_list_tables", "list_tables"),
-    ("ep_describe_schema", "describe_schema"),
-    ("ep_get_rows", "get_rows"),
-    ("ep_run_query", "run_query"),
+    ("ep_list_tables{phase:main}", "list_tables"),
+    ("ep_describe_schema{phase:main}", "describe_schema"),
+    ("ep_get_rows{phase:main}", "get_rows"),
+    ("ep_run_query{phase:main}", "run_query"),
 ]
 
 
@@ -28,6 +33,20 @@ def load_run(path: Path) -> dict:
     return data
 
 
+def require_phase_main(run: dict, path_hint: str) -> None:
+    """Refuse runs that predate phase-tagged Trends (warmup was mixed in)."""
+    metrics = run.get("metrics") or {}
+    missing = [key for key, _ in ENDPOINTS if key not in metrics]
+    if missing:
+        run_id = (run.get("run_metadata") or {}).get("run_id", path_hint)
+        raise SystemExit(
+            f"REFUSE: run {run_id} predates the phase-tagging fix "
+            f"(missing {', '.join(missing)}). "
+            f"Do not cite unfiltered ep_* series from this file; re-run after "
+            f"the warmup-exclusion change."
+        )
+
+
 def percentile(metric: dict, key: str) -> float | None:
     vals = metric.get("values") or {}
     if key not in vals:
@@ -35,23 +54,33 @@ def percentile(metric: dict, key: str) -> float | None:
     return float(vals[key])
 
 
-def rps(run: dict) -> float | None:
+def throughput_wall(run: dict) -> float | None:
+    """k6 http_reqs.rate over the full test window — reference only."""
+    meta = run.get("run_metadata") or {}
+    if meta.get("throughput_wall") is not None:
+        return float(meta["throughput_wall"])
     metrics = run.get("metrics") or {}
     http = metrics.get("http_reqs") or {}
-    # Prefer rate if present; else count / test duration from state.
     vals = http.get("values") or {}
     if "rate" in vals:
         return float(vals["rate"])
-    count = vals.get("count")
-    state = run.get("state") or {}
-    # testRunDurationMs appears in newer k6; fall back to iteration_duration count.
-    dur_ms = state.get("testRunDurationMs")
-    if count is not None and dur_ms:
-        return float(count) / (float(dur_ms) / 1000.0)
     return None
 
 
-def index_runs() -> list[dict]:
+def throughput_measured(run: dict) -> float | None:
+    """Measured-phase throughput: (iterations × reqs/iter) / main duration."""
+    meta = run.get("run_metadata") or {}
+    if meta.get("throughput_measured") is not None:
+        return float(meta["throughput_measured"])
+    duration = meta.get("main_scenario_duration_s")
+    iterations = meta.get("iterations")
+    rpi = meta.get("requests_per_iteration")
+    if duration and iterations and rpi and float(duration) > 0:
+        return (float(iterations) * float(rpi)) / float(duration)
+    return None
+
+
+def index_runs(*, require_phase: bool = False) -> list[dict]:
     rows = []
     for path in sorted(RUNS_DIR.glob("*.json")):
         if path.name == "index.jsonl":
@@ -60,6 +89,10 @@ def index_runs() -> list[dict]:
             data = load_run(path)
         except SystemExit:
             continue
+        if require_phase:
+            metrics = data.get("metrics") or {}
+            if any(key not in metrics for key, _ in ENDPOINTS):
+                continue
         meta = data["run_metadata"]
         rows.append({"path": path, "data": data, "meta": meta})
     return rows
@@ -107,6 +140,9 @@ def pct_cost(direct: float | None, gateway: float | None) -> str:
 
 
 def render_pair(d: dict, g: dict, fmt_kind: str, allow_mixed: bool) -> str:
+    require_phase_main(d["data"], str(d["path"]))
+    require_phase_main(g["data"], str(g["path"]))
+
     md = d["meta"]
     mg = g["meta"]
     if md["git_commit"] != mg["git_commit"] and not allow_mixed:
@@ -145,15 +181,8 @@ def render_pair(d: dict, g: dict, fmt_kind: str, allow_mixed: bool) -> str:
             delta(dp50, gp50), delta(dp95, gp95), delta(dp99, gp99),
         ])
 
-    drps, grps = rps(d["data"]), rps(g["data"])
-    thr = [
-        "throughput rps",
-        fmt(drps, 1), "—", "—",
-        fmt(grps, 1), "—", "—",
-        delta(drps, grps) if drps and grps else "—",
-        pct_cost(drps, grps),
-        "—",
-    ]
+    d_meas, g_meas = throughput_measured(d["data"]), throughput_measured(g["data"])
+    d_wall, g_wall = throughput_wall(d["data"]), throughput_wall(g["data"])
 
     if fmt_kind == "markdown":
         lines.append(f"### {title}")
@@ -163,8 +192,13 @@ def render_pair(d: dict, g: dict, fmt_kind: str, allow_mixed: bool) -> str:
             lines.append("| " + " | ".join(r) + " |")
         lines.append("")
         lines.append(
-            f"Throughput: direct {fmt(drps, 1)} req/s, gateway {fmt(grps, 1)} req/s, "
-            f"gateway cost {pct_cost(drps, grps)}."
+            f"**throughput_measured** (main phase only): "
+            f"direct {fmt(d_meas, 1)} req/s, gateway {fmt(g_meas, 1)} req/s, "
+            f"gateway cost {pct_cost(d_meas, g_meas)}."
+        )
+        lines.append(
+            f"throughput_wall (k6 http_reqs.rate over full test window, reference only): "
+            f"direct {fmt(d_wall, 1)} req/s, gateway {fmt(g_wall, 1)} req/s."
         )
     else:
         lines.append(title)
@@ -172,8 +206,12 @@ def render_pair(d: dict, g: dict, fmt_kind: str, allow_mixed: bool) -> str:
         for r in rows:
             lines.append("\t".join(r))
         lines.append(
-            f"throughput\tdirect={fmt(drps, 1)} rps\tgateway={fmt(grps, 1)} rps\t"
-            f"cost={pct_cost(drps, grps)}"
+            f"throughput_measured\tdirect={fmt(d_meas, 1)} rps\tgateway={fmt(g_meas, 1)} rps\t"
+            f"cost={pct_cost(d_meas, g_meas)}"
+        )
+        lines.append(
+            f"throughput_wall\tdirect={fmt(d_wall, 1)} rps\tgateway={fmt(g_wall, 1)} rps\t"
+            f"(reference only)"
         )
 
     lines.append("")
@@ -198,14 +236,18 @@ def main() -> None:
     if not RUNS_DIR.is_dir():
         raise SystemExit(f"no runs directory at {RUNS_DIR}")
 
-    rows = index_runs()
+    # --latest skips pre-phase-tag archives; --run-ids still hard-refuses them
+    # so an explicit citation attempt cannot silently use contaminated series.
+    rows = index_runs(require_phase=bool(args.latest))
     if not rows:
         raise SystemExit(f"no provenance-bearing runs in {RUNS_DIR}")
 
     outputs = []
     if args.run_ids:
         a_id, b_id = args.run_ids
-        by_id = {r["meta"]["run_id"]: r for r in rows}
+        # Load all provenance runs so we can name the refused id accurately.
+        all_rows = index_runs(require_phase=False)
+        by_id = {r["meta"]["run_id"]: r for r in all_rows}
         if a_id not in by_id or b_id not in by_id:
             raise SystemExit(f"run id not found: {a_id!r} / {b_id!r}")
         ra, rb = by_id[a_id], by_id[b_id]
@@ -216,7 +258,10 @@ def main() -> None:
     elif args.latest:
         pairs = latest_pairs(rows)
         if not pairs:
-            raise SystemExit("no direct/gateway pairs found for --latest")
+            raise SystemExit(
+                "no direct/gateway pairs with {phase:main} metrics found for --latest "
+                "(re-run after the warmup-exclusion fix)"
+            )
         for d, g in pairs:
             outputs.append(render_pair(d, g, args.format, args.allow_mixed_commit))
     else:
