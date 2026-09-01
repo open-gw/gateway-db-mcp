@@ -96,13 +96,17 @@ def is_aborted(data: dict) -> bool:
     return resolve_status(data) == "aborted"
 
 
+def is_suspect(data: dict) -> bool:
+    return resolve_status(data) == "suspect"
+
+
 def is_usable(data: dict) -> bool:
-    """Complete enough to cite: not aborted, and has phase:main series.
+    """Complete enough to cite: not aborted/suspect, and has phase:main series.
 
     Historical runs without a status field count as complete when they carry
-    phase:main metrics. Aborted runs always have status=aborted.
+    phase:main metrics. Aborted/suspect runs are never cited.
     """
-    if is_aborted(data):
+    if is_aborted(data) or is_suspect(data):
         return False
     return has_phase_main(data)
 
@@ -155,7 +159,7 @@ def index_runs() -> tuple[list[dict], int, int]:
             data = load_run(path)
         except SystemExit:
             continue
-        if is_aborted(data):
+        if is_aborted(data) or is_suspect(data):
             skipped_aborted += 1
             continue
         if not has_phase_main(data):
@@ -606,7 +610,7 @@ def main() -> None:
     rows, skipped_aborted, skipped_pre_phase = index_runs()
 
     # Always report aborted skips (Part 5).
-    print(f"Skipped {skipped_aborted} aborted run(s).", file=sys.stderr)
+    print(f"Skipped {skipped_aborted} aborted/suspect run(s).", file=sys.stderr)
     if skipped_pre_phase:
         print(
             f"Skipped {skipped_pre_phase} pre-phase-tag run(s) "
