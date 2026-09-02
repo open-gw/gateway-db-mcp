@@ -58,10 +58,10 @@ const T = {
   run_query:   new Trend('ep_run_query', true),
 };
 
-// Wall-clock marks for the main scenario. Every main iteration records
-// Date.now() at entry and exit; handleSummary uses (max - min) / 1000 as
-// main_scenario_duration_s. Do not mix in scenario.startTime — that is a
-// scheduled origin, not an observation, and pollutes the Trend extremes.
+// Wall-clock marks for the main scenario (diagnostic). Every main iteration
+// records Date.now() at entry and exit; handleSummary keeps
+// (max − min) / 1000 as main_scenario_duration_s_walltrend. Authoritative
+// duration comes from iteration_duration{phase:main}.avg — see handleSummary.
 const mainWallMark = new Trend('main_wall_mark_ms', false);
 
 // Endpoint steps exercised once per iteration. Length is requests_per_iteration
@@ -203,76 +203,85 @@ export function handleSummary(summary) {
     }
   }
 
-  // Measured-phase throughput: ITERATIONS × requests_per_iteration / main wall
-  // duration from in-k6 Date.now() marks. Do NOT use http_reqs.rate — that
-  // divides by the full test window (warmup + gap + main + graceful stop).
-  const mark = (summary.metrics || {}).main_wall_mark_ms;
+  // Authoritative measured-phase duration from iteration_duration avg:
+  //   duration_s = avg_ms × iterations / vus / 1000
+  // The Date.now Trend (max−min) is retained as walltrend for comparison; at
+  // high VU it can span VU create/teardown and inflate far beyond the scenario.
+  const metrics = summary.metrics || {};
+  const mark = metrics.main_wall_mark_ms;
   const markVals = mark && mark.values ? mark.values : null;
-  let mainDurationS = null;
-  let throughputMeasured = null;
+  let walltrendS = null;
   if (markVals && markVals.max != null && markVals.min != null && markVals.max > markVals.min) {
-    mainDurationS = (markVals.max - markVals.min) / 1000.0;
-    throughputMeasured = (ITERATIONS * REQUESTS_PER_ITERATION) / mainDurationS;
+    walltrendS = (markVals.max - markVals.min) / 1000.0;
   }
 
-  const httpReqs = ((summary.metrics || {}).http_reqs || {}).values || {};
+  const iterVals = (metrics['iteration_duration{phase:main}'] || {}).values || {};
+  let mainDurationS = null;
+  let throughputMeasured = null;
+  if (iterVals.avg != null && VUS > 0) {
+    mainDurationS = (iterVals.avg * ITERATIONS) / VUS / 1000.0;
+    if (mainDurationS > 0) {
+      throughputMeasured = (ITERATIONS * REQUESTS_PER_ITERATION) / mainDurationS;
+    }
+  }
+
+  const httpReqs = (metrics.http_reqs || {}).values || {};
   metadata.requests_per_iteration = REQUESTS_PER_ITERATION;
   metadata.main_scenario_duration_s = mainDurationS;
+  metadata.main_scenario_duration_s_walltrend = walltrendS;
   metadata.throughput_measured = throughputMeasured;
   metadata.throughput_wall = httpReqs.rate != null ? httpReqs.rate : null;
   metadata.main_duration_method =
-    'main_wall_mark_ms Trend: max(Date.now) - min(Date.now) over main iteration entry/exit';
+    'iteration_duration{phase:main}.avg_ms × iterations / vus / 1000';
+
+  if (
+    mainDurationS != null && walltrendS != null && mainDurationS > 0
+    && Math.abs(walltrendS - mainDurationS) / mainDurationS > 0.20
+  ) {
+    metadata.duration_metric_divergence = true;
+  } else if (mainDurationS != null && walltrendS != null) {
+    metadata.duration_metric_divergence = false;
+  }
 
   // Completeness: measured-phase count must equal ITERATIONS and duration must exist.
-  const mainList = ((summary.metrics || {})['ep_list_tables{phase:main}'] || {}).values || {};
+  const mainList = (metrics['ep_list_tables{phase:main}'] || {}).values || {};
   const mainCount = mainList.count != null ? mainList.count : null;
   let status = 'complete';
   let abortReason = null;
   if (mainDurationS == null) {
     status = 'aborted';
-    abortReason = 'main_scenario_duration_s is null (warmup-only or interrupted)';
+    abortReason = 'main_scenario_duration_s is null (missing iteration_duration{phase:main}.avg)';
   } else if (mainCount !== ITERATIONS) {
     status = 'aborted';
     abortReason = `ep_list_tables{phase:main}.count=${mainCount} != ITERATIONS=${ITERATIONS}`;
   }
 
-  // Sanity: measured throughput must agree with iteration time within 2x.
-  // Catches duration contamination (harness activity overlapping the window).
-  if (status === 'complete' && throughputMeasured != null) {
-    const metrics = summary.metrics || {};
-    let iterMedMs = null;
-    const tagged = (metrics['iteration_duration{phase:main}'] || {}).values || {};
-    if (tagged.med != null) {
-      iterMedMs = tagged.med;
-    } else {
-      // Fallback when the tagged series is absent: sum of endpoint medians.
-      let sum = 0;
-      let n = 0;
-      for (const name of [
-        'ep_list_tables{phase:main}',
-        'ep_describe_schema{phase:main}',
-        'ep_get_rows{phase:main}',
-        'ep_run_query{phase:main}',
-      ]) {
-        const med = ((metrics[name] || {}).values || {}).med;
-        if (med != null) {
-          sum += med;
-          n += 1;
-        }
+  // Suspect: iteration time far exceeds sum of endpoint averages — time spent
+  // outside the measured requests (not a throughput/duration circular check).
+  if (status === 'complete' && iterVals.avg != null) {
+    let epSum = 0;
+    let epN = 0;
+    for (const name of [
+      'ep_list_tables{phase:main}',
+      'ep_describe_schema{phase:main}',
+      'ep_get_rows{phase:main}',
+      'ep_run_query{phase:main}',
+    ]) {
+      const avg = ((metrics[name] || {}).values || {}).avg;
+      if (avg != null) {
+        epSum += avg;
+        epN += 1;
       }
-      if (n === REQUESTS_PER_ITERATION) iterMedMs = sum;
     }
-    if (iterMedMs != null && iterMedMs > 0) {
-      const implied = (VUS * REQUESTS_PER_ITERATION * 1000.0) / iterMedMs;
-      metadata.throughput_implied_by_iteration_med = implied;
-      const ratio = throughputMeasured > implied
-        ? throughputMeasured / implied
-        : implied / throughputMeasured;
-      if (ratio > 2) {
+    if (epN === REQUESTS_PER_ITERATION && epSum > 0) {
+      metadata.iteration_avg_ms = iterVals.avg;
+      metadata.endpoint_avg_sum_ms = epSum;
+      const ratio = iterVals.avg / epSum;
+      if (ratio > 3) {
         status = 'suspect';
         abortReason =
-          `throughput_measured=${throughputMeasured} differs >2x from ` +
-          `iteration-implied=${implied} (ratio=${ratio.toFixed(2)})`;
+          `iteration_duration.avg=${iterVals.avg} ms exceeds sum of ep_*.avg=` +
+          `${epSum} ms by >3x (ratio=${ratio.toFixed(2)})`;
       }
     }
   }
@@ -290,7 +299,9 @@ export function handleSummary(summary) {
   return {
     [out]: JSON.stringify(payload, null, 2),
     stdout: `\nWrote ${out} status=${status}\n`
-      + `main_scenario_duration_s=${mainDurationS}\n`
+      + `main_scenario_duration_s=${mainDurationS}`
+      + (walltrendS != null ? `  walltrend=${walltrendS}` : '')
+      + `\n`
       + `throughput_measured=${throughputMeasured}  throughput_wall=${metadata.throughput_wall}\n`,
   };
 }

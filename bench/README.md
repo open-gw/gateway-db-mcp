@@ -99,6 +99,10 @@ this harness is a property of the harness; only the deltas transfer.
 
 # Paste-ready three-arm decomposition with provenance footer
 ./scripts/summarise-runs.py --latest --format markdown --repeats 3
+# Or select one sweep by run_id timestamp prefix
+./scripts/summarise-runs.py --since 20260901T2137 --format markdown
+# Regenerable RESULTS.md (hardware + tables + provenance from metadata)
+./scripts/generate-results-doc.py --since 20260901T2137 > RESULTS.md
 ```
 
 **Citable latency runs should pass `--no-span-file`.** That starts the collector
@@ -111,10 +115,12 @@ The runner refuses to measure when preconditions fail: Jaeger/collector down on
 a governed target, collector export errors, traces not arriving at Jaeger,
 Jaeger RSS above `JAEGER_MEM_LIMIT_MB`, misconfigured `/db`/`/raw` routes,
 unexpected containers, or a dirty git tree. Each check is recorded in
-`run_metadata.preflight`. Aborted or suspect k6 runs are archived with the
-corresponding `status` and skipped by the summariser. Default governed runs do
-**not** restart Jaeger/Kong per repeat; use `--reset-telemetry` only as a
-diagnostic (see Telemetry confounds). Sweeps restart Jaeger once up front.
+`run_metadata.preflight`. Aborted k6 runs are archived with `status=aborted`
+and skipped by the summariser; `status=suspect` runs are included and flagged
+(latency usable; throughput is always re-derived from
+`iteration_duration{phase:main}`). Default governed runs do **not** restart
+Jaeger/Kong per repeat; use `--reset-telemetry` only as a diagnostic (see
+Telemetry confounds). Sweeps restart Jaeger once up front.
 
 Writes `results/runs/<UTC>-<target>-vus<N>-iter<M>[-rK].json` and appends a line to
 `results/runs/index.jsonl`. Dirty git trees are refused unless `--force` is
