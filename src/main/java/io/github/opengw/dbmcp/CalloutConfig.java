@@ -149,6 +149,9 @@ public final class CalloutConfig {
                 return String.format(
                     "jdbc:sqlserver://%s:%d;databaseName=%s;encrypt=true;trustServerCertificate=false",
                     host, port, database);
+            case "mariadb":
+                return String.format(
+                    "jdbc:mariadb://%s:%d/%s?useSSL=true", host, port, database);
             default: // mysql
                 return String.format(
                     "jdbc:mysql://%s:%d/%s?useSSL=true&serverTimezone=UTC&allowPublicKeyRetrieval=false",
@@ -160,6 +163,7 @@ public final class CalloutConfig {
         switch (dbType) {
             case "postgres": return "org.postgresql.Driver";
             case "mssql":    return "com.microsoft.sqlserver.jdbc.SQLServerDriver";
+            case "mariadb":  return "org.mariadb.jdbc.Driver";
             default:         return "com.mysql.cj.jdbc.Driver";
         }
     }
@@ -178,11 +182,11 @@ public final class CalloutConfig {
     // ── Validation & parsing ──────────────────────────────────────────────────
 
     private static void validate(Builder b) {
-        Set<String> valid = new HashSet<>(Arrays.asList("mysql", "postgres", "mssql"));
+        Set<String> valid = new HashSet<>(Arrays.asList("mysql", "postgres", "mssql", "mariadb"));
         if (!valid.contains(b.dbType))
             throw new IllegalArgumentException(
                 "[gateway-db-mcp] Unsupported db.type '" + b.dbType
-                + "'. Supported: mysql, postgres, mssql");
+                + "'. Supported: mysql, postgres, mssql, mariadb");
         if (b.maxRows < 1 || b.maxRows > 100_000)
             throw new IllegalArgumentException("security.maxRows must be 1–100000, got " + b.maxRows);
         if (b.queryTimeoutSec < 1 || b.queryTimeoutSec > 300)
@@ -226,6 +230,7 @@ public final class CalloutConfig {
         switch (dbType) {
             case "postgres": return 5432;
             case "mssql":    return 1433;
+            case "mariadb":  return 3306;
             default:         return 3306;
         }
     }

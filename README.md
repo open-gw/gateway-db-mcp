@@ -10,7 +10,7 @@
 **Config-driven JDBC database bridge for enterprise API gateway MCP proxies — Apigee X, Kong, Azure APIM. Zero custom code.**
 
 ```
-AI Agent  →MCP→  [Apigee X / Kong / Azure APIM]  →HTTP→  [gateway-db-mcp]  →JDBC→  MySQL / PostgreSQL / MSSQL
+AI Agent  →MCP→  [Apigee X / Kong / Azure APIM]  →HTTP→  [gateway-db-mcp]  →JDBC→  MySQL / MariaDB / PostgreSQL / MSSQL
 ```
 
 ---
@@ -164,7 +164,7 @@ All properties are set in `JC-DBBridge.xml` `<Properties>` (embedded mode) or en
 
 | Property | Env Var | Required | Default | Description |
 |---|---|---|---|---|
-| `db.type` | `DB_TYPE` | No | `mysql` | `mysql` \| `postgres` \| `mssql` |
+| `db.type` | `DB_TYPE` | No | `mysql` | `mysql` \| `mariadb` \| `postgres` \| `mssql` |
 | `db.host` | `DB_HOST` | **Yes** | — | Hostname or IP |
 | `db.port` | `DB_PORT` | No | type-specific | Override default port |
 | `db.database` | `DB_DATABASE` | **Yes** | — | Database / catalog name |
@@ -281,10 +281,11 @@ policy is planned for v2.0 (see [Roadmap](#roadmap)).
 | Database | JDBC Driver | Default Port | Notes |
 |---|---|---|---|
 | MySQL 8.x | `com.mysql.cj.jdbc.Driver` | 3306 | SSL enabled by default |
+| MariaDB 10.6+ | `org.mariadb.jdbc.Driver` | 3306 | SSL enabled by default |
 | PostgreSQL 14+ | `org.postgresql.Driver` | 5432 | |
 | SQL Server 2019+ | `com.microsoft.sqlserver.jdbc.SQLServerDriver` | 1433 | TLS required |
 
-Adding a new database requires one line in `pom.xml` (JDBC driver dependency) and one `case` in `CalloutConfig.driverClassName()` and `jdbcUrl()`. Oracle, DB2, and MariaDB support is straightforward; Oracle's OJDBC JAR has license restrictions preventing bundling — install instructions are in the [Contributing guide](CONTRIBUTING.md).
+Adding a new database requires one line in `pom.xml` (JDBC driver dependency) and one `case` in `CalloutConfig.driverClassName()` and `jdbcUrl()`. Oracle and DB2 support is straightforward; Oracle's OJDBC JAR has license restrictions preventing bundling — install instructions are in the [Contributing guide](CONTRIBUTING.md).
 
 ---
 
@@ -422,7 +423,7 @@ Set on every response and available to downstream policies:
 | v2.0 | Column-level access control for PHI exclusion | 📋 Planned |
 | v2.1 | Google Secret Manager native credential resolution | 📋 Planned |
 | v2.2 | Schema change webhook → auto `/openapi` refresh | 📋 Planned |
-| v3.0 | Oracle, DB2, and MariaDB driver bundles | 📋 Planned |
+| v3.0 | Oracle and DB2 driver bundles | 📋 Planned |
 
 ---
 
@@ -518,7 +519,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Priority areas:
 
 - Apache Calcite AST validator (`/dev/calcite-validator` branch)
 - Column-level ACL configuration model
-- Oracle / DB2 / MariaDB driver installation guides
+- Oracle / DB2 driver installation guides
 - Additional gateway integration guides (AWS API Gateway, Nginx)
 - Performance benchmarks against PostgREST / Hasura baselines
 
