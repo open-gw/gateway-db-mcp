@@ -25,6 +25,7 @@ import json
 import statistics
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 BENCH_DIR = Path(__file__).resolve().parent.parent
@@ -50,6 +51,11 @@ ARM_LABEL = {
 
 # Relative spread threshold: (max − min) / median > this → mark cell + WARNING.
 SPREAD_WARN = 0.25
+
+# Max gap between consecutive non-aborted runs in one repeat cluster.
+# Main-phase repeats finish well under this; a larger gap is a new attempt
+# (e.g. resume after an aborted mid-group run), not another repeat.
+REPEAT_GAP_SECONDS = 10 * 60
 
 # Unicode en-dash for median [min–max] ranges.
 EN_DASH = "\u2013"
@@ -238,52 +244,168 @@ def index_runs(
     return rows, skips
 
 
-def group_key_for(meta: dict) -> str:
-    """Repeat-group id when present; else each run is its own group of 1."""
-    rgid = meta.get("repeat_group_id")
-    if rgid is not None and str(rgid) != "":
-        return str(rgid)
-    return f"solo:{meta['run_id']}"
+def run_sort_key(meta: dict) -> str:
+    """Chronological key from timestamp_utc or run_id prefix."""
+    return str(meta.get("timestamp_utc") or meta["run_id"])
 
 
-def build_repeat_groups(rows: list[dict]) -> dict[tuple, list[dict]]:
-    """Map (target, vus, iterations, group_key) → list of run rows (repeats)."""
-    groups: dict[tuple, list[dict]] = {}
-    for row in rows:
-        m = row["meta"]
-        key = (m["target"], m["vus"], m["iterations"], group_key_for(m))
-        groups.setdefault(key, []).append(row)
-    for key in groups:
-        groups[key].sort(
-            key=lambda r: r["meta"].get("timestamp_utc") or r["meta"]["run_id"]
+def run_epoch_seconds(meta: dict) -> float:
+    """Parse run time as epoch seconds for proximity clustering."""
+    ts = meta.get("timestamp_utc")
+    if isinstance(ts, str) and ts:
+        # Accept both …Z and +00:00
+        text = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
+        try:
+            return datetime.fromisoformat(text).timestamp()
+        except ValueError:
+            pass
+    rid = str(meta.get("run_id") or "")
+    # run_id starts with YYYYMMDDTHHMMSSZ
+    prefix = rid.split("-", 1)[0]
+    try:
+        dt = datetime.strptime(prefix, "%Y%m%dT%H%M%SZ").replace(
+            tzinfo=timezone.utc
         )
-    return groups
+        return dt.timestamp()
+    except ValueError:
+        return 0.0
+
+def cluster_by_proximity(rows: list[dict]) -> list[list[dict]]:
+    """Split runs into proximity clusters.
+
+    Rows are assumed non-aborted (callers filter aborted first). Consecutive
+    runs within REPEAT_GAP_SECONDS belong to the same attempt; a larger gap
+    starts a new cluster. Aborted runs are never present here, so they cannot
+    split a cluster — only wall-clock gaps between complete/suspect runs do.
+    """
+    if not rows:
+        return []
+    ordered = sorted(rows, key=lambda r: (run_epoch_seconds(r["meta"]), run_sort_key(r["meta"])))
+    clusters: list[list[dict]] = [[ordered[0]]]
+    for row in ordered[1:]:
+        prev = clusters[-1][-1]
+        gap = run_epoch_seconds(row["meta"]) - run_epoch_seconds(prev["meta"])
+        if gap <= REPEAT_GAP_SECONDS:
+            clusters[-1].append(row)
+        else:
+            clusters.append([row])
+    return clusters
+
+
+def select_repeat_cluster(
+    rows: list[dict],
+    *,
+    expected_repeats: int | None = None,
+) -> tuple[list[dict], list[str]]:
+    """Newest proximity cluster for one (target, vus, iterations).
+
+    When the newest cluster has more than ``expected_repeats`` runs, keep the
+    newest N and report discards. Older clusters are discarded entirely.
+    Returns (selected_rows, discard_notes).
+    """
+    notes: list[str] = []
+    clusters = cluster_by_proximity(rows)
+    if not clusters:
+        return [], notes
+
+    def cluster_end(c: list[dict]) -> float:
+        return max(run_epoch_seconds(r["meta"]) for r in c)
+
+    newest = max(clusters, key=cluster_end)
+    for c in clusters:
+        if c is newest:
+            continue
+        ids = ", ".join(r["meta"]["run_id"] for r in c)
+        notes.append(
+            f"discarded older proximity cluster ({len(c)} run(s)): {ids}"
+        )
+
+    selected = newest
+    if expected_repeats is not None and expected_repeats > 0 and len(selected) > expected_repeats:
+        # Keep the newest N within the cluster.
+        ordered = sorted(
+            selected,
+            key=lambda r: (run_epoch_seconds(r["meta"]), run_sort_key(r["meta"])),
+        )
+        dropped = ordered[:-expected_repeats]
+        selected = ordered[-expected_repeats:]
+        ids = ", ".join(r["meta"]["run_id"] for r in dropped)
+        notes.append(
+            f"discarded {len(dropped)} excess run(s) above --repeats="
+            f"{expected_repeats}: {ids}"
+        )
+    return selected, notes
 
 
 def group_timestamp(runs: list[dict]) -> str:
-    return max(
-        (r["meta"].get("timestamp_utc") or r["meta"]["run_id"]) for r in runs
-    )
+    return max(run_sort_key(r["meta"]) for r in runs)
+
+
+def warn_repeat_count_mismatch(
+    arms: dict[str, list[dict]],
+    expected: int | None,
+) -> None:
+    """Assert each arm's run count matches the expected repeat count."""
+    if expected is None or expected <= 0:
+        return
+    meta0 = next(iter(arms.values()))[0]["meta"]
+    vu = meta0["vus"]
+    iterations = meta0["iterations"]
+    for t in ARMS:
+        if t not in arms:
+            continue
+        n = len(arms[t])
+        if n != expected:
+            print(
+                f"WARNING: repeat-count mismatch "
+                f"target={t} VU={vu} iterations={iterations}: "
+                f"have {n}, expected {expected}",
+                file=sys.stderr,
+            )
+
+
+def configs_from_rows(
+    rows: list[dict],
+    *,
+    expected_repeats: int | None = None,
+) -> dict[tuple, list[dict]]:
+    """Map (target, vus, iterations) → selected proximity cluster."""
+    by_cfg: dict[tuple, list[dict]] = {}
+    for row in rows:
+        m = row["meta"]
+        key = (m["target"], int(m["vus"]), int(m["iterations"]))
+        by_cfg.setdefault(key, []).append(row)
+
+    selected: dict[tuple, list[dict]] = {}
+    for key, cfg_rows in by_cfg.items():
+        chosen, notes = select_repeat_cluster(
+            cfg_rows, expected_repeats=expected_repeats
+        )
+        for note in notes:
+            target, vus, iterations = key
+            print(
+                f"NOTE: {target} VU={vus} iter={iterations}: {note}",
+                file=sys.stderr,
+            )
+        if chosen:
+            selected[key] = chosen
+            if expected_repeats is not None and len(chosen) != expected_repeats:
+                print(
+                    f"WARNING: repeat-count mismatch "
+                    f"target={key[0]} VU={key[1]} iterations={key[2]}: "
+                    f"have {len(chosen)}, expected {expected_repeats}",
+                    file=sys.stderr,
+                )
+    return selected
 
 
 def latest_arm_maps(
     rows: list[dict],
+    *,
+    expected_repeats: int | None = None,
 ) -> list[dict[str, list[dict]]]:
-    """Newest usable arm groups per VU.
-
-    For each VU, prefer the iteration count whose newest-per-arm groups cover
-    the most arms; break ties by newest group timestamp.
-    Each arm maps to its list of repeat runs.
-    """
-    groups = build_repeat_groups(rows)
-
-    # Newest group per (target, vus, iterations).
-    newest: dict[tuple, list[dict]] = {}
-    for (target, vus, iterations, _gk), runs in groups.items():
-        arm_key = (target, vus, iterations)
-        prev = newest.get(arm_key)
-        if prev is None or group_timestamp(runs) > group_timestamp(prev):
-            newest[arm_key] = runs
+    """Newest usable arm groups per VU (proximity-clustered repeats)."""
+    newest = configs_from_rows(rows, expected_repeats=expected_repeats)
 
     vu_levels = sorted({vus for (_t, vus, _it) in newest})
     result: list[dict[str, list[dict]]] = []
@@ -308,49 +430,41 @@ def latest_arm_maps(
                 best_n = n
                 best_ts = ts
         if best:
+            warn_repeat_count_mismatch(best, expected_repeats)
             result.append(best)
     return result
 
 
-def since_arm_maps(rows: list[dict]) -> list[dict[str, list[dict]]]:
-    """Three-arm tables for a --since sweep.
+def since_arm_maps(
+    rows: list[dict],
+    *,
+    expected_repeats: int | None = None,
+) -> list[dict[str, list[dict]]]:
+    """Three-arm tables for a --since sweep (proximity-clustered repeats)."""
+    newest = configs_from_rows(rows, expected_repeats=expected_repeats)
+    by_vu_iter: dict[tuple, dict[str, list[dict]]] = {}
+    for (target, vus, iterations), runs in newest.items():
+        by_vu_iter.setdefault((vus, iterations), {})[target] = runs
+    result: list[dict[str, list[dict]]] = []
+    for cfg in sorted(by_vu_iter.keys()):
+        arms = by_vu_iter[cfg]
+        warn_repeat_count_mismatch(arms, expected_repeats)
+        result.append(arms)
+    return result
 
-    Groups by (target, vus, iterations). When multiple repeat_group_id values
-    exist for the same arm (resume / overlapping re-sweep), keep only the
-    newest group so tables stay at the intended repeat count.
-    """
-    groups: dict[tuple, list[dict]] = {}
-    for row in rows:
-        m = row["meta"]
-        key = (
-            int(m["vus"]),
-            int(m["iterations"]),
-            m["target"],
-            group_key_for(m),
-        )
-        groups.setdefault(key, []).append(row)
 
-    newest: dict[tuple, list[dict]] = {}
-    for (vus, iterations, target, _gk), runs in groups.items():
-        runs = sorted(
-            runs,
-            key=lambda r: (
-                r["meta"].get("repeat_index")
-                if r["meta"].get("repeat_index") is not None
-                else 0,
-                r["meta"].get("timestamp_utc") or r["meta"]["run_id"],
-            ),
-        )
-        arm_key = (vus, iterations, target)
-        prev = newest.get(arm_key)
-        if prev is None or group_timestamp(runs) > group_timestamp(prev):
-            newest[arm_key] = runs
-
-    by_cfg: dict[tuple, dict[str, list[dict]]] = {}
-    for (vus, iterations, target), runs in newest.items():
-        by_cfg.setdefault((vus, iterations), {})[target] = runs
-
-    return [by_cfg[cfg] for cfg in sorted(by_cfg.keys())]
+def flatten_arm_maps(groups: list[dict[str, list[dict]]]) -> list[dict]:
+    """Unique rows from selected arm maps, stable by run_id."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for arms in groups:
+        for runs in arms.values():
+            for row in runs:
+                rid = row["meta"]["run_id"]
+                if rid not in seen:
+                    seen.add(rid)
+                    out.append(row)
+    return out
 
 
 def median_min_max(values: list[float]) -> tuple[float, float, float] | None:
@@ -866,7 +980,7 @@ def main() -> None:
             render_group(arms, args.format, args.allow_mixed_commit, args.repeats)
         )
     elif since:
-        groups = since_arm_maps(rows)
+        groups = since_arm_maps(rows, expected_repeats=args.repeats)
         if not groups:
             raise SystemExit(
                 f"no phase-tagged runs matching --since {since}"
@@ -878,7 +992,7 @@ def main() -> None:
                 )
             )
     elif args.latest:
-        groups = latest_arm_maps(rows)
+        groups = latest_arm_maps(rows, expected_repeats=args.repeats)
         if not groups:
             raise SystemExit(
                 "no phase-tagged complete runs found for --latest "

@@ -113,7 +113,8 @@ between arms transfer, because all three arms carry the same co-location.
 
 
 def section_results(sr, rows: list[dict], allow_mixed: bool, repeats: int | None) -> str:
-    groups = sr.since_arm_maps(rows)
+    # rows are already the selected contributing set; regroup for tables.
+    groups = sr.since_arm_maps(rows, expected_repeats=repeats)
     parts = ["## Results tables", ""]
     parts.append(
         "Three-arm decomposition. Latency from `ep_*{{phase:main}}`; "
@@ -205,15 +206,37 @@ threats-to-validity discussion.
 """
 
 
+def _duration_divergence(meta: dict) -> tuple[bool, float | None, float | None, float | None]:
+    """Return (is_divergent, derived_s, walltrend_s, pct_over_derived)."""
+    flag = bool(meta.get("duration_metric_divergence"))
+    derived = meta.get("main_scenario_duration_s")
+    wall = meta.get("main_scenario_duration_s_walltrend")
+    pct = None
+    try:
+        d = float(derived) if derived is not None else None
+        w = float(wall) if wall is not None else None
+    except (TypeError, ValueError):
+        d, w = None, None
+    if d is not None and w is not None and d > 0:
+        pct = ((w - d) / d) * 100.0
+    return flag, d, w, pct
+
+
 def section_repeats(rows: list[dict], sr, expected: int | None) -> str:
     by_cfg: Counter = Counter()
     suspect_by_cfg: Counter = Counter()
+    divergent_by_cfg: Counter = Counter()
+    divergent_rows: list[dict] = []
     for row in rows:
         m = row["meta"]
         key = (m["target"], int(m["vus"]), int(m["iterations"]))
         by_cfg[key] += 1
         if sr.is_suspect(row["data"]):
             suspect_by_cfg[key] += 1
+        flag, _d, _w, _pct = _duration_divergence(m)
+        if flag:
+            divergent_by_cfg[key] += 1
+            divergent_rows.append(row)
 
     exp = expected if expected is not None else 3
     lines = [
@@ -223,26 +246,86 @@ def section_repeats(rows: list[dict], sr, expected: int | None) -> str:
         f"(override with `--repeats`).",
         "",
         "Criterion: a run is included when it has `ep_*{phase:main}` metrics "
-        "and is not `status=aborted`. Runs with `status=suspect` are **included "
-        "and flagged** — latency is usable; throughput is re-derived from "
+        "and is not `status=aborted`, and it belongs to the newest proximity "
+        "cluster for its (target, VUs, iterations) — consecutive runs more "
+        f"than {sr.REPEAT_GAP_SECONDS // 60} minutes apart are treated as a "
+        "separate attempt. Runs with `status=suspect` are **included and "
+        "flagged** — latency is usable; throughput is re-derived from "
         "`iteration_duration{phase:main}` and must not use the stored "
-        "`throughput_measured`. Aborted runs are excluded. Pre-phase-tag and "
-        "incomplete-metadata files are skipped.",
+        "`throughput_measured`. Aborted runs are excluded (they do not split "
+        "a proximity cluster). Pre-phase-tag and incomplete-metadata files "
+        "are skipped.",
         "",
-        "| target | VUs | iterations | runs used | of which suspect |",
-        "| --- | --- | --- | --- | --- |",
+        "| target | VUs | iterations | runs used | of which suspect | divergent |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     for (target, vus, iterations), n in sorted(by_cfg.items()):
         lines.append(
             f"| {target} | {vus} | {iterations} | {n} | "
-            f"{suspect_by_cfg.get((target, vus, iterations), 0)} |"
+            f"{suspect_by_cfg.get((target, vus, iterations), 0)} | "
+            f"{divergent_by_cfg.get((target, vus, iterations), 0)} |"
         )
+        if n != exp:
+            print(
+                f"WARNING: repeat-count mismatch "
+                f"target={target} VU={vus} iterations={iterations}: "
+                f"have {n}, expected {exp}",
+                file=sys.stderr,
+            )
     total_suspect = sum(suspect_by_cfg.values())
+    total_divergent = sum(divergent_by_cfg.values())
     lines.append("")
     lines.append(
         f"Total contributing runs: **{len(rows)}**. "
-        f"Flagged suspect: **{total_suspect}**."
+        f"Flagged suspect: **{total_suspect}**. "
+        f"Duration-metric divergent: **{total_divergent}**."
     )
+    lines.append("")
+
+    # Always state divergence status explicitly (none vs not checked).
+    lines.append("### Scenario-duration divergence")
+    lines.append("")
+    if not divergent_rows:
+        lines.append(
+            "No contributing runs recorded `duration_metric_divergence: true`. "
+            "The wall-trend and derived scenario durations agreed within 20% "
+            "for every cited run."
+        )
+    else:
+        details = []
+        pcts = []
+        ids = []
+        for row in sorted(divergent_rows, key=lambda r: r["meta"]["run_id"]):
+            m = row["meta"]
+            _flag, derived, wall, pct = _duration_divergence(m)
+            rid = m["run_id"]
+            ids.append(f"`{rid}`")
+            if pct is not None:
+                pcts.append(f"{pct:.0f}%")
+            if derived is not None and wall is not None and pct is not None:
+                details.append(
+                    f"`{rid}` (derived {derived:.2f} s, wall-trend {wall:.2f} s, "
+                    f"{pct:.0f}% over derived)"
+                )
+            else:
+                details.append(f"`{rid}` (duration fields incomplete)")
+        n = len(divergent_rows)
+        pct_list = ", ".join(pcts) if pcts else "n/a"
+        id_list = ", ".join(ids)
+        lines.append(
+            f"{n} run{'s' if n != 1 else ''} recorded a scenario-duration "
+            f"divergence: the `Date.now()` wall Trend exceeded the derived "
+            f"duration by {pct_list} ({id_list}). These runs overlapped host "
+            f"sleep during an unattended sweep. The derived duration and all "
+            f"per-request latency percentiles are unaffected, since k6 records "
+            f"per-request timings independently of scenario duration. Tail "
+            f"percentiles for the affected configurations carry wider ranges "
+            f"and are marked in the tables. The runs are retained rather than "
+            f"excluded, because excluding them would select on a condition that "
+            f"does not affect the measured quantity."
+        )
+        lines.append("")
+        lines.append("Per run: " + "; ".join(details) + ".")
     lines.append("")
     return "\n".join(lines)
 
@@ -282,28 +365,19 @@ def main() -> None:
     since = args.since
     if args.latest and not since:
         rows, skips = sr.index_runs(since=None)
-        groups = sr.latest_arm_maps(rows)
+        groups = sr.latest_arm_maps(rows, expected_repeats=args.repeats)
         if not groups:
             raise SystemExit("no usable runs for --latest")
-        # Flatten selected arm groups into the contributing row set.
-        selected: list[dict] = []
-        seen: set[str] = set()
-        for arms in groups:
-            for runs in arms.values():
-                for row in runs:
-                    rid = row["meta"]["run_id"]
-                    if rid not in seen:
-                        seen.add(rid)
-                        selected.append(row)
-        rows = selected
+        rows = sr.flatten_arm_maps(groups)
     else:
         rows, skips = sr.index_runs(since=since)
-        # For the doc, pool by (target, vus, iterations) like --since summariser.
-        groups = sr.since_arm_maps(rows)
+        groups = sr.since_arm_maps(rows, expected_repeats=args.repeats)
         if not groups:
             raise SystemExit(
                 f"no usable runs matching --since {since}"
             )
+        # Cite only the selected proximity clusters, not every --since match.
+        rows = sr.flatten_arm_maps(groups)
 
     sr.report_skips(skips)
 

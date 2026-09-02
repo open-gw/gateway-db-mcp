@@ -240,7 +240,6 @@ Every run contributing to the figures above.
 | `20260902T103135Z-direct-vus10-iter20000-r1` | direct | 10 | 20000 | `fc399fafcf3ef3c0a1208901fe85aae31a6713d7` | complete |
 | `20260902T103227Z-direct-vus10-iter20000-r2` | direct | 10 | 20000 | `fc399fafcf3ef3c0a1208901fe85aae31a6713d7` | complete |
 | `20260902T103319Z-direct-vus10-iter20000-r3` | direct | 10 | 20000 | `fc399fafcf3ef3c0a1208901fe85aae31a6713d7` | complete |
-| `20260902T110412Z-gateway-vus10-iter20000-r1` | gateway | 10 | 20000 | `fc399fafcf3ef3c0a1208901fe85aae31a6713d7` | complete |
 | `20260902T111841Z-gateway-vus10-iter20000-r1` | gateway | 10 | 20000 | `fc399fafcf3ef3c0a1208901fe85aae31a6713d7` | complete |
 | `20260902T112007Z-gateway-vus10-iter20000-r2` | gateway | 10 | 20000 | `fc399fafcf3ef3c0a1208901fe85aae31a6713d7` | complete |
 | `20260902T112142Z-gateway-vus10-iter20000-r3` | gateway | 10 | 20000 | `fc399fafcf3ef3c0a1208901fe85aae31a6713d7` | complete |
@@ -307,18 +306,24 @@ threats-to-validity discussion.
 
 Expected repeats per configuration: **3** (override with `--repeats`).
 
-Criterion: a run is included when it has `ep_*{phase:main}` metrics and is not `status=aborted`. Runs with `status=suspect` are **included and flagged** — latency is usable; throughput is re-derived from `iteration_duration{phase:main}` and must not use the stored `throughput_measured`. Aborted runs are excluded. Pre-phase-tag and incomplete-metadata files are skipped.
+Criterion: a run is included when it has `ep_*{phase:main}` metrics and is not `status=aborted`, and it belongs to the newest proximity cluster for its (target, VUs, iterations) — consecutive runs more than 10 minutes apart are treated as a separate attempt. Runs with `status=suspect` are **included and flagged** — latency is usable; throughput is re-derived from `iteration_duration{phase:main}` and must not use the stored `throughput_measured`. Aborted runs are excluded (they do not split a proximity cluster). Pre-phase-tag and incomplete-metadata files are skipped.
 
-| target | VUs | iterations | runs used | of which suspect |
-| --- | --- | --- | --- | --- |
-| direct | 1 | 20000 | 3 | 0 |
-| direct | 10 | 20000 | 3 | 0 |
-| direct | 50 | 20000 | 3 | 0 |
-| gateway | 1 | 20000 | 3 | 0 |
-| gateway | 10 | 20000 | 4 | 0 |
-| gateway | 50 | 20000 | 3 | 0 |
-| passthrough | 1 | 20000 | 3 | 0 |
-| passthrough | 10 | 20000 | 3 | 0 |
-| passthrough | 50 | 20000 | 3 | 0 |
+| target | VUs | iterations | runs used | of which suspect | divergent |
+| --- | --- | --- | --- | --- | --- |
+| direct | 1 | 20000 | 3 | 0 | 1 |
+| direct | 10 | 20000 | 3 | 0 | 0 |
+| direct | 50 | 20000 | 3 | 0 | 0 |
+| gateway | 1 | 20000 | 3 | 0 | 0 |
+| gateway | 10 | 20000 | 3 | 0 | 0 |
+| gateway | 50 | 20000 | 3 | 0 | 0 |
+| passthrough | 1 | 20000 | 3 | 0 | 2 |
+| passthrough | 10 | 20000 | 3 | 0 | 0 |
+| passthrough | 50 | 20000 | 3 | 0 | 0 |
 
-Total contributing runs: **28**. Flagged suspect: **0**.
+Total contributing runs: **27**. Flagged suspect: **0**. Duration-metric divergent: **3**.
+
+### Scenario-duration divergence
+
+3 runs recorded a scenario-duration divergence: the `Date.now()` wall Trend exceeded the derived duration by 36%, 332%, 83% (`20260902T102907Z-direct-vus1-iter20000-r3`, `20260902T103937Z-passthrough-vus1-iter20000-r2`, `20260902T104636Z-passthrough-vus1-iter20000-r3`). These runs overlapped host sleep during an unattended sweep. The derived duration and all per-request latency percentiles are unaffected, since k6 records per-request timings independently of scenario duration. Tail percentiles for the affected configurations carry wider ranges and are marked in the tables. The runs are retained rather than excluded, because excluding them would select on a condition that does not affect the measured quantity.
+
+Per run: `20260902T102907Z-direct-vus1-iter20000-r3` (derived 69.31 s, wall-trend 94.03 s, 36% over derived); `20260902T103937Z-passthrough-vus1-iter20000-r2` (derived 87.15 s, wall-trend 376.21 s, 332% over derived); `20260902T104636Z-passthrough-vus1-iter20000-r3` (derived 93.66 s, wall-trend 171.43 s, 83% over derived).
