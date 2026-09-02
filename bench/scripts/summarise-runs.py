@@ -5,15 +5,17 @@ Standard library only. Never invents numbers: every figure comes from a file
 under results/runs/ with a run_metadata provenance block.
 
 Reads ep_*{phase:main} series only — unfiltered ep_* include warmup samples and
-must not be cited. Runs that predate phase tagging are refused/skipped, not
-silently re-parsed. Aborted runs (status=aborted) are skipped and counted.
+must not be cited. Runs that predate phase tagging are skipped, not silently
+re-parsed. Aborted runs (status=aborted) are skipped and counted. Suspect runs
+(status=suspect) are included and flagged — latency is usable; throughput is
+always re-derived from iteration_duration{phase:main}.
 
 Three-arm decomposition (when available):
   Δ proxy  = passthrough − direct   (Kong hop, no plugins)
   Δ policy = gateway − passthrough  (governance plugins)  ← paper claim
   Δ total  = gateway − direct
 
-When repeats share a repeat_group_id, every latency and throughput figure is
+When repeats share a configuration, every latency and throughput figure is
 reported as median [min–max] across those repeats.
 """
 from __future__ import annotations
@@ -21,10 +23,14 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-RUNS_DIR = Path(__file__).resolve().parent.parent / "results" / "runs"
+BENCH_DIR = Path(__file__).resolve().parent.parent
+REPO_ROOT = BENCH_DIR.parent
+RUNS_DIR = BENCH_DIR / "results" / "runs"
 
 # (filtered metric key in summary JSON, display label)
 ENDPOINTS = [
@@ -33,6 +39,8 @@ ENDPOINTS = [
     ("ep_get_rows{phase:main}", "get_rows"),
     ("ep_run_query{phase:main}", "run_query"),
 ]
+
+ITER_DURATION_MAIN = "iteration_duration{phase:main}"
 
 ARMS = ("direct", "passthrough", "gateway")
 ARM_LABEL = {
@@ -44,14 +52,32 @@ ARM_LABEL = {
 # Relative spread threshold: (max − min) / median > this → mark cell + WARNING.
 SPREAD_WARN = 0.25
 
+# Max gap between consecutive non-aborted runs in one repeat cluster.
+# Main-phase repeats finish well under this; a larger gap is a new attempt
+# (e.g. resume after an aborted mid-group run), not another repeat.
+REPEAT_GAP_SECONDS = 10 * 60
+
 # Unicode en-dash for median [min–max] ranges.
 EN_DASH = "\u2013"
 
 
-def load_run(path: Path) -> dict:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if "run_metadata" not in data:
-        raise SystemExit(f"REFUSE: {path} has no run_metadata (pre-provenance file)")
+def load_run(path: Path) -> dict | None:
+    """Load a run JSON. Return None when provenance is incomplete."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Skipped {path.name}: unreadable ({exc})", file=sys.stderr)
+        return None
+    meta = data.get("run_metadata")
+    if not isinstance(meta, dict):
+        print(f"Skipped {path.name}: no run_metadata", file=sys.stderr)
+        return None
+    if not meta.get("target"):
+        print(f"Skipped {path.name}: missing run_metadata.target", file=sys.stderr)
+        return None
+    if not meta.get("run_id"):
+        print(f"Skipped {path.name}: missing run_metadata.run_id", file=sys.stderr)
+        return None
     return data
 
 
@@ -101,12 +127,13 @@ def is_suspect(data: dict) -> bool:
 
 
 def is_usable(data: dict) -> bool:
-    """Complete enough to cite: not aborted/suspect, and has phase:main series.
+    """Complete enough to cite: not aborted, and has phase:main series.
 
+    Suspect runs are included (latency sound; throughput re-derived).
     Historical runs without a status field count as complete when they carry
-    phase:main metrics. Aborted/suspect runs are never cited.
+    phase:main metrics.
     """
-    if is_aborted(data) or is_suspect(data):
+    if is_aborted(data):
         return False
     return has_phase_main(data)
 
@@ -116,6 +143,13 @@ def percentile(metric: dict, key: str) -> float | None:
     if key not in vals:
         return None
     return float(vals[key])
+
+
+def requests_per_iteration(run: dict) -> int:
+    meta = run.get("run_metadata") or {}
+    if meta.get("requests_per_iteration") is not None:
+        return int(meta["requests_per_iteration"])
+    return len(ENDPOINTS)
 
 
 def throughput_wall(run: dict) -> float | None:
@@ -131,87 +165,247 @@ def throughput_wall(run: dict) -> float | None:
     return None
 
 
-def throughput_measured(run: dict) -> float | None:
-    """Measured-phase throughput: (iterations × reqs/iter) / main duration."""
+def throughput_derived(run: dict) -> float | None:
+    """Main-phase throughput from iteration_duration — never trust stored value.
+
+    duration_s = iteration_duration{phase:main}.avg_ms × iterations / vus / 1000
+    throughput = iterations × requests_per_iteration / duration_s
+    """
     meta = run.get("run_metadata") or {}
-    if meta.get("throughput_measured") is not None:
-        return float(meta["throughput_measured"])
-    duration = meta.get("main_scenario_duration_s")
+    metrics = run.get("metrics") or {}
+    it_metric = metrics.get(ITER_DURATION_MAIN) or {}
+    vals = it_metric.get("values") or {}
+    avg_ms = vals.get("avg")
     iterations = meta.get("iterations")
-    rpi = meta.get("requests_per_iteration")
-    if duration and iterations and rpi and float(duration) > 0:
-        return (float(iterations) * float(rpi)) / float(duration)
-    return None
+    vus = meta.get("vus")
+    if avg_ms is None or iterations is None or vus is None:
+        return None
+    try:
+        avg_ms_f = float(avg_ms)
+        iterations_f = float(iterations)
+        vus_f = float(vus)
+    except (TypeError, ValueError):
+        return None
+    if vus_f <= 0 or iterations_f <= 0:
+        return None
+    duration_s = avg_ms_f * iterations_f / vus_f / 1000.0
+    if duration_s <= 0:
+        return None
+    rpi = requests_per_iteration(run)
+    return iterations_f * float(rpi) / duration_s
 
 
-def index_runs() -> tuple[list[dict], int, int]:
-    """Load provenance-bearing runs.
+# Back-compat alias for callers / generate-results-doc.
+throughput_measured = throughput_derived
 
-    Returns (usable_rows, skipped_aborted, skipped_pre_phase).
+
+def run_id_matches_since(run_id: str, since: str) -> bool:
+    """True when run_id's leading timestamp is at or after the since prefix."""
+    ts = run_id.split("-", 1)[0]
+    if not ts or not ts[0].isdigit():
+        return False
+    if ts.startswith(since):
+        return True
+    return ts >= since
+
+
+def index_runs(
+    since: str | None = None,
+) -> tuple[list[dict], dict[str, int]]:
+    """Load usable provenance-bearing runs.
+
+    Returns (usable_rows, skip_counts).
     """
     rows: list[dict] = []
-    skipped_aborted = 0
-    skipped_pre_phase = 0
+    skips = {
+        "aborted": 0,
+        "pre_phase": 0,
+        "incomplete_meta": 0,
+        "since_filtered": 0,
+    }
     for path in sorted(RUNS_DIR.glob("*.json")):
         if path.name == "index.jsonl":
             continue
-        try:
-            data = load_run(path)
-        except SystemExit:
-            continue
-        if is_aborted(data) or is_suspect(data):
-            skipped_aborted += 1
-            continue
-        if not has_phase_main(data):
-            skipped_pre_phase += 1
+        data = load_run(path)
+        if data is None:
+            skips["incomplete_meta"] += 1
             continue
         meta = data["run_metadata"]
+        if since and not run_id_matches_since(str(meta["run_id"]), since):
+            skips["since_filtered"] += 1
+            continue
+        if is_aborted(data):
+            skips["aborted"] += 1
+            continue
+        if not has_phase_main(data):
+            skips["pre_phase"] += 1
+            continue
         rows.append({"path": path, "data": data, "meta": meta})
-    return rows, skipped_aborted, skipped_pre_phase
+    return rows, skips
 
 
-def group_key_for(meta: dict) -> str:
-    """Repeat-group id when present; else each run is its own group of 1."""
-    rgid = meta.get("repeat_group_id")
-    if rgid is not None and str(rgid) != "":
-        return str(rgid)
-    return f"solo:{meta['run_id']}"
+def run_sort_key(meta: dict) -> str:
+    """Chronological key from timestamp_utc or run_id prefix."""
+    return str(meta.get("timestamp_utc") or meta["run_id"])
 
 
-def build_repeat_groups(rows: list[dict]) -> dict[tuple, list[dict]]:
-    """Map (target, vus, iterations, group_key) → list of run rows (repeats)."""
-    groups: dict[tuple, list[dict]] = {}
-    for row in rows:
-        m = row["meta"]
-        key = (m["target"], m["vus"], m["iterations"], group_key_for(m))
-        groups.setdefault(key, []).append(row)
-    for key in groups:
-        groups[key].sort(key=lambda r: r["meta"]["timestamp_utc"])
-    return groups
+def run_epoch_seconds(meta: dict) -> float:
+    """Parse run time as epoch seconds for proximity clustering."""
+    ts = meta.get("timestamp_utc")
+    if isinstance(ts, str) and ts:
+        # Accept both …Z and +00:00
+        text = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
+        try:
+            return datetime.fromisoformat(text).timestamp()
+        except ValueError:
+            pass
+    rid = str(meta.get("run_id") or "")
+    # run_id starts with YYYYMMDDTHHMMSSZ
+    prefix = rid.split("-", 1)[0]
+    try:
+        dt = datetime.strptime(prefix, "%Y%m%dT%H%M%SZ").replace(
+            tzinfo=timezone.utc
+        )
+        return dt.timestamp()
+    except ValueError:
+        return 0.0
+
+def cluster_by_proximity(rows: list[dict]) -> list[list[dict]]:
+    """Split runs into proximity clusters.
+
+    Rows are assumed non-aborted (callers filter aborted first). Consecutive
+    runs within REPEAT_GAP_SECONDS belong to the same attempt; a larger gap
+    starts a new cluster. Aborted runs are never present here, so they cannot
+    split a cluster — only wall-clock gaps between complete/suspect runs do.
+    """
+    if not rows:
+        return []
+    ordered = sorted(rows, key=lambda r: (run_epoch_seconds(r["meta"]), run_sort_key(r["meta"])))
+    clusters: list[list[dict]] = [[ordered[0]]]
+    for row in ordered[1:]:
+        prev = clusters[-1][-1]
+        gap = run_epoch_seconds(row["meta"]) - run_epoch_seconds(prev["meta"])
+        if gap <= REPEAT_GAP_SECONDS:
+            clusters[-1].append(row)
+        else:
+            clusters.append([row])
+    return clusters
+
+
+def select_repeat_cluster(
+    rows: list[dict],
+    *,
+    expected_repeats: int | None = None,
+) -> tuple[list[dict], list[str]]:
+    """Newest proximity cluster for one (target, vus, iterations).
+
+    When the newest cluster has more than ``expected_repeats`` runs, keep the
+    newest N and report discards. Older clusters are discarded entirely.
+    Returns (selected_rows, discard_notes).
+    """
+    notes: list[str] = []
+    clusters = cluster_by_proximity(rows)
+    if not clusters:
+        return [], notes
+
+    def cluster_end(c: list[dict]) -> float:
+        return max(run_epoch_seconds(r["meta"]) for r in c)
+
+    newest = max(clusters, key=cluster_end)
+    for c in clusters:
+        if c is newest:
+            continue
+        ids = ", ".join(r["meta"]["run_id"] for r in c)
+        notes.append(
+            f"discarded older proximity cluster ({len(c)} run(s)): {ids}"
+        )
+
+    selected = newest
+    if expected_repeats is not None and expected_repeats > 0 and len(selected) > expected_repeats:
+        # Keep the newest N within the cluster.
+        ordered = sorted(
+            selected,
+            key=lambda r: (run_epoch_seconds(r["meta"]), run_sort_key(r["meta"])),
+        )
+        dropped = ordered[:-expected_repeats]
+        selected = ordered[-expected_repeats:]
+        ids = ", ".join(r["meta"]["run_id"] for r in dropped)
+        notes.append(
+            f"discarded {len(dropped)} excess run(s) above --repeats="
+            f"{expected_repeats}: {ids}"
+        )
+    return selected, notes
 
 
 def group_timestamp(runs: list[dict]) -> str:
-    return max(r["meta"]["timestamp_utc"] for r in runs)
+    return max(run_sort_key(r["meta"]) for r in runs)
+
+
+def warn_repeat_count_mismatch(
+    arms: dict[str, list[dict]],
+    expected: int | None,
+) -> None:
+    """Assert each arm's run count matches the expected repeat count."""
+    if expected is None or expected <= 0:
+        return
+    meta0 = next(iter(arms.values()))[0]["meta"]
+    vu = meta0["vus"]
+    iterations = meta0["iterations"]
+    for t in ARMS:
+        if t not in arms:
+            continue
+        n = len(arms[t])
+        if n != expected:
+            print(
+                f"WARNING: repeat-count mismatch "
+                f"target={t} VU={vu} iterations={iterations}: "
+                f"have {n}, expected {expected}",
+                file=sys.stderr,
+            )
+
+
+def configs_from_rows(
+    rows: list[dict],
+    *,
+    expected_repeats: int | None = None,
+) -> dict[tuple, list[dict]]:
+    """Map (target, vus, iterations) → selected proximity cluster."""
+    by_cfg: dict[tuple, list[dict]] = {}
+    for row in rows:
+        m = row["meta"]
+        key = (m["target"], int(m["vus"]), int(m["iterations"]))
+        by_cfg.setdefault(key, []).append(row)
+
+    selected: dict[tuple, list[dict]] = {}
+    for key, cfg_rows in by_cfg.items():
+        chosen, notes = select_repeat_cluster(
+            cfg_rows, expected_repeats=expected_repeats
+        )
+        for note in notes:
+            target, vus, iterations = key
+            print(
+                f"NOTE: {target} VU={vus} iter={iterations}: {note}",
+                file=sys.stderr,
+            )
+        if chosen:
+            selected[key] = chosen
+            if expected_repeats is not None and len(chosen) != expected_repeats:
+                print(
+                    f"WARNING: repeat-count mismatch "
+                    f"target={key[0]} VU={key[1]} iterations={key[2]}: "
+                    f"have {len(chosen)}, expected {expected_repeats}",
+                    file=sys.stderr,
+                )
+    return selected
 
 
 def latest_arm_maps(
     rows: list[dict],
+    *,
+    expected_repeats: int | None = None,
 ) -> list[dict[str, list[dict]]]:
-    """Newest usable arm groups per VU.
-
-    For each VU, prefer the iteration count whose newest-per-arm groups cover
-    the most arms; break ties by newest group timestamp.
-    Each arm maps to its list of repeat runs.
-    """
-    groups = build_repeat_groups(rows)
-
-    # Newest group per (target, vus, iterations).
-    newest: dict[tuple, list[dict]] = {}
-    for (target, vus, iterations, _gk), runs in groups.items():
-        arm_key = (target, vus, iterations)
-        prev = newest.get(arm_key)
-        if prev is None or group_timestamp(runs) > group_timestamp(prev):
-            newest[arm_key] = runs
+    """Newest usable arm groups per VU (proximity-clustered repeats)."""
+    newest = configs_from_rows(rows, expected_repeats=expected_repeats)
 
     vu_levels = sorted({vus for (_t, vus, _it) in newest})
     result: list[dict[str, list[dict]]] = []
@@ -236,8 +430,41 @@ def latest_arm_maps(
                 best_n = n
                 best_ts = ts
         if best:
+            warn_repeat_count_mismatch(best, expected_repeats)
             result.append(best)
     return result
+
+
+def since_arm_maps(
+    rows: list[dict],
+    *,
+    expected_repeats: int | None = None,
+) -> list[dict[str, list[dict]]]:
+    """Three-arm tables for a --since sweep (proximity-clustered repeats)."""
+    newest = configs_from_rows(rows, expected_repeats=expected_repeats)
+    by_vu_iter: dict[tuple, dict[str, list[dict]]] = {}
+    for (target, vus, iterations), runs in newest.items():
+        by_vu_iter.setdefault((vus, iterations), {})[target] = runs
+    result: list[dict[str, list[dict]]] = []
+    for cfg in sorted(by_vu_iter.keys()):
+        arms = by_vu_iter[cfg]
+        warn_repeat_count_mismatch(arms, expected_repeats)
+        result.append(arms)
+    return result
+
+
+def flatten_arm_maps(groups: list[dict[str, list[dict]]]) -> list[dict]:
+    """Unique rows from selected arm maps, stable by run_id."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for arms in groups:
+        for runs in arms.values():
+            for row in runs:
+                rid = row["meta"]["run_id"]
+                if rid not in seen:
+                    seen.add(rid)
+                    out.append(row)
+    return out
 
 
 def median_min_max(values: list[float]) -> tuple[float, float, float] | None:
@@ -305,7 +532,7 @@ def arm_throughput_values(
     out: list[float] = []
     for row in runs:
         if kind == "measured":
-            v = throughput_measured(row["data"])
+            v = throughput_derived(row["data"])
         else:
             v = throughput_wall(row["data"])
         if v is not None:
@@ -321,6 +548,37 @@ def collect_commits(arms: dict[str, list[dict]]) -> set[str]:
     return commits
 
 
+def bench_code_differs(commits: set[str]) -> list[str]:
+    """Return bench paths outside results/ that differ between commits."""
+    ordered = sorted(commits)
+    if len(ordered) < 2:
+        return []
+    differing: list[str] = []
+    base = ordered[0]
+    for other in ordered[1:]:
+        try:
+            proc = subprocess.run(
+                ["git", "diff", "--name-only", base, other],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            # If git is unavailable, fall back to refusing mixed commits.
+            return ["<git unavailable>"]
+        if proc.returncode not in (0, 1):
+            return [f"<git diff failed: {proc.stderr.strip() or proc.returncode}>"]
+        for line in proc.stdout.splitlines():
+            path = line.strip()
+            if not path:
+                continue
+            if path.startswith("bench/") and not path.startswith("bench/results/"):
+                if path not in differing:
+                    differing.append(path)
+    return differing
+
+
 def check_commits(arms: dict[str, list[dict]], allow_mixed: bool) -> str:
     commits = collect_commits(arms)
     if len(commits) <= 1:
@@ -334,20 +592,38 @@ def check_commits(arms: dict[str, list[dict]], allow_mixed: bool) -> str:
                 f"  {t}={row['meta']['run_id']} commit={row['meta']['git_commit']}"
             )
     detail = "\n".join(detail_lines)
+    code_diffs = bench_code_differs(commits)
+    if not code_diffs:
+        return (
+            "NOTE: mixed git commits, but bench/ code outside results/ is "
+            "identical — comparison allowed.\n"
+            f"{detail}\n\n"
+        )
     if not allow_mixed:
         raise SystemExit(
-            f"REFUSE: comparing different git commits\n{detail}\n"
+            f"REFUSE: comparing different git commits that change bench code "
+            f"outside results/\n"
+            f"  differing: {', '.join(code_diffs)}\n{detail}\n"
             f"Pass --allow-mixed-commit to override (not for paper figures)."
         )
     return (
         "WARNING: MIXED GIT COMMITS — deltas are not attributable to mediation alone.\n"
-        f"{detail}\n\n"
+        f"  differing bench code: {', '.join(code_diffs)}\n{detail}\n\n"
     )
 
 
 def sample_meta(arms: dict[str, list[dict]]) -> dict:
     first_arm = next(iter(arms.values()))
     return first_arm[0]["meta"]
+
+
+def count_suspect(arms: dict[str, list[dict]]) -> int:
+    n = 0
+    for runs in arms.values():
+        for row in runs:
+            if is_suspect(row["data"]):
+                n += 1
+    return n
 
 
 def repeats_note(
@@ -360,8 +636,6 @@ def repeats_note(
     if not counts:
         return notes
     max_n = max(counts.values())
-    # Infer expectation: explicit --repeats, else max observed if any group
-    # carries repeat_group_id / repeat_index, else 1.
     has_repeat_meta = any(
         row["meta"].get("repeat_group_id") or row["meta"].get("repeat_index") is not None
         for runs in arms.values()
@@ -370,7 +644,6 @@ def repeats_note(
     exp = expected
     if exp is None and has_repeat_meta:
         exp = max_n
-        # Prefer the highest repeat_index + 1 when available.
         idxs = [
             int(row["meta"]["repeat_index"])
             for runs in arms.values()
@@ -386,11 +659,29 @@ def repeats_note(
     if max_n > 1 or has_repeat_meta or short:
         parts = [f"{ARM_LABEL[t]}={n}" for t, n in counts.items()]
         notes.append("repeats used: " + ", ".join(parts))
-        if short and exp > 1:
+        # Only warn on shortfall when the caller set --repeats explicitly;
+        # otherwise a longer arm (e.g. pooled multi-group sweep) would
+        # falsely flag the others as missing.
+        if short and expected is not None and expected > 1:
             missing = ", ".join(
-                f"{ARM_LABEL[t]} has {n} of {exp}" for t, n in short.items()
+                f"{ARM_LABEL[t]} has {n} of {expected}" for t, n in short.items()
             )
             notes.append(f"NOTE: fewer than expected repeats ({missing}).")
+
+    n_suspect = count_suspect(arms)
+    if n_suspect:
+        suspect_ids = [
+            row["meta"]["run_id"]
+            for t in ARMS
+            if t in arms
+            for row in arms[t]
+            if is_suspect(row["data"])
+        ]
+        notes.append(
+            f"FLAGGED: {n_suspect} status=suspect run(s) included "
+            f"(latency usable; throughput re-derived): "
+            + ", ".join(suspect_ids)
+        )
     return notes
 
 
@@ -478,7 +769,7 @@ def render_group(
                 lines.append("\t".join(r))
             lines.append("")
 
-    # Throughput decomposition from medians across repeats.
+    # Throughput decomposition from medians across repeats (derived).
     thr_stats: dict[str, tuple[float, float, float] | None] = {}
     wall_stats: dict[str, tuple[float, float, float] | None] = {}
     for t in ARMS:
@@ -490,7 +781,7 @@ def render_group(
         wall_stats[t] = median_min_max(arm_throughput_values(arms[t], "wall"))
         if spread_wide(thr_stats[t]):
             spread_warnings.append(
-                f"WARNING: wide spread VU={vu} throughput_measured "
+                f"WARNING: wide spread VU={vu} throughput_derived "
                 f"{ARM_LABEL[t]}: {fmt_range(thr_stats[t], digits=1)}"
             )
 
@@ -511,7 +802,7 @@ def render_group(
 
     if fmt_kind == "markdown":
         lines.append(
-            f"**throughput_measured** (main phase, req/s): "
+            f"**throughput_derived** (from iteration_duration{{phase:main}}, req/s): "
             f"direct {d_cell}, passthrough {p_cell}, governed {g_cell}.  "
             f"Δ proxy cost {pct_delta(d_t, p_t)}, "
             f"Δ policy cost {pct_delta(p_t, g_t)}, "
@@ -527,11 +818,13 @@ def render_group(
             "Δ policy = governed − passthrough (jwt + rate-limit + otel). "
             "Δ total = governed − direct. "
             "Lead with Δ policy. "
-            "Latency/throughput cells are median [min–max] across repeats."
+            "Latency/throughput cells are median [min–max] across repeats. "
+            "Suspect runs are flagged above; their stored throughput_measured "
+            "is ignored in favour of the derived figure."
         )
     else:
         lines.append(
-            f"throughput_measured\tdirect={d_cell}\tpassthrough={p_cell}\t"
+            f"throughput_derived\tdirect={d_cell}\tpassthrough={p_cell}\t"
             f"governed={g_cell}\t"
             f"proxy_cost={pct_delta(d_t, p_t)}\tpolicy_cost={pct_delta(p_t, g_t)}\t"
             f"total_cost={pct_delta(d_t, g_t)}"
@@ -547,13 +840,20 @@ def render_group(
     for t in ARMS:
         if t not in arms:
             continue
-        ids = ",".join(r["meta"]["run_id"] for r in arms[t])
+        ids = ",".join(
+            r["meta"]["run_id"]
+            + ("†" if is_suspect(r["data"]) else "")
+            for r in arms[t]
+        )
         id_parts.append(f"{ARM_LABEL[t]}={ids}")
     commit = meta0["git_commit"][:12]
-    host = meta0["host"].get("cpu_model", "?")
-    os_name = meta0["host"].get("os", "?")
+    host = (meta0.get("host") or {}).get("cpu_model", "?")
+    os_name = (meta0.get("host") or {}).get("os", "?")
     lines.append("")
-    lines.append(f"Provenance: {' '.join(id_parts)} git={commit} host={host} ({os_name})")
+    lines.append(
+        f"Provenance: {' '.join(id_parts)} git={commit} host={host} ({os_name})"
+        + ("  († = status=suspect)" if count_suspect(arms) else "")
+    )
     notes = []
     for t in ARMS:
         if t not in arms:
@@ -565,9 +865,7 @@ def render_group(
     if notes:
         lines.append("Notes: " + " ".join(notes))
 
-    # Spread warnings after the tables so cells marked " !" are visible first.
     if spread_warnings:
-        # Dedupe while preserving order.
         seen: set[str] = set()
         unique: list[str] = []
         for w in spread_warnings:
@@ -580,12 +878,42 @@ def render_group(
     return "\n".join(lines)
 
 
+def report_skips(skips: dict[str, int]) -> None:
+    if skips.get("incomplete_meta"):
+        print(
+            f"Skipped {skips['incomplete_meta']} run(s) lacking "
+            f"run_metadata.target or run_metadata.run_id.",
+            file=sys.stderr,
+        )
+    if skips.get("aborted"):
+        print(f"Skipped {skips['aborted']} aborted run(s).", file=sys.stderr)
+    if skips.get("pre_phase"):
+        print(
+            f"Skipped {skips['pre_phase']} pre-phase-tag run(s) "
+            f"(missing ep_*{{phase:main}}).",
+            file=sys.stderr,
+        )
+    if skips.get("since_filtered"):
+        print(
+            f"Excluded {skips['since_filtered']} run(s) outside --since filter.",
+            file=sys.stderr,
+        )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--latest",
         action="store_true",
         help="newest arm groups per VU (direct / passthrough / gateway when present)",
+    )
+    ap.add_argument(
+        "--since",
+        metavar="PREFIX",
+        help=(
+            "summarise the sweep whose run_ids are at or after this timestamp "
+            "prefix (e.g. 20260901T2137); implies three-arm tables like --latest"
+        ),
     )
     ap.add_argument(
         "--run-ids",
@@ -607,35 +935,26 @@ def main() -> None:
     if not RUNS_DIR.is_dir():
         raise SystemExit(f"no runs directory at {RUNS_DIR}")
 
-    rows, skipped_aborted, skipped_pre_phase = index_runs()
-
-    # Always report aborted skips (Part 5).
-    print(f"Skipped {skipped_aborted} aborted/suspect run(s).", file=sys.stderr)
-    if skipped_pre_phase:
-        print(
-            f"Skipped {skipped_pre_phase} pre-phase-tag run(s) "
-            f"(missing ep_*{{phase:main}}).",
-            file=sys.stderr,
-        )
+    since = args.since
+    rows, skips = index_runs(since=since)
+    report_skips(skips)
 
     if not rows and not args.run_ids:
         raise SystemExit(
-            f"no usable (complete, phase-tagged) runs in {RUNS_DIR}"
+            f"no usable (complete/suspect, phase-tagged) runs in {RUNS_DIR}"
+            + (f" matching --since {since}" if since else "")
         )
 
     outputs: list[str] = []
     if args.run_ids:
         if len(args.run_ids) < 2 or len(args.run_ids) > 3:
             raise SystemExit("--run-ids expects 2 or 3 run ids")
-        # Explicit citation: scan all provenance files (including aborted /
-        # pre-phase) so we can refuse clearly rather than say "not found".
         by_id: dict[str, dict] = {}
         for path in sorted(RUNS_DIR.glob("*.json")):
             if path.name == "index.jsonl":
                 continue
-            try:
-                data = load_run(path)
-            except SystemExit:
+            data = load_run(path)
+            if data is None:
                 continue
             meta = data["run_metadata"]
             by_id[meta["run_id"]] = {"path": path, "data": data, "meta": meta}
@@ -660,8 +979,20 @@ def main() -> None:
         outputs.append(
             render_group(arms, args.format, args.allow_mixed_commit, args.repeats)
         )
+    elif since:
+        groups = since_arm_maps(rows, expected_repeats=args.repeats)
+        if not groups:
+            raise SystemExit(
+                f"no phase-tagged runs matching --since {since}"
+            )
+        for arms in groups:
+            outputs.append(
+                render_group(
+                    arms, args.format, args.allow_mixed_commit, args.repeats
+                )
+            )
     elif args.latest:
-        groups = latest_arm_maps(rows)
+        groups = latest_arm_maps(rows, expected_repeats=args.repeats)
         if not groups:
             raise SystemExit(
                 "no phase-tagged complete runs found for --latest "
@@ -674,7 +1005,7 @@ def main() -> None:
                 )
             )
     else:
-        ap.error("specify --latest or --run-ids")
+        ap.error("specify --latest, --since, or --run-ids")
 
     print("\n\n".join(outputs))
 

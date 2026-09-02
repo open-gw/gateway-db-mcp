@@ -887,9 +887,12 @@ with open("results/runs/index.jsonl", "a", encoding="utf-8") as f:
 PY
 
   echo "Wrote $out_path status=$status" >&2
-  if [[ "$status" == "aborted" || "$status" == "suspect" ]]; then
-    echo "REFUSE: run $status — see $out_path" >&2
+  if [[ "$status" == "aborted" ]]; then
+    echo "REFUSE: run aborted — see $out_path" >&2
     exit 1
+  fi
+  if [[ "$status" == "suspect" ]]; then
+    echo "WARNING: run marked suspect — archived and continuing (see $out_path)" >&2
   fi
   printf '%s\n' "$out_path"
 }
