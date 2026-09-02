@@ -315,35 +315,42 @@ def latest_arm_maps(
 def since_arm_maps(rows: list[dict]) -> list[dict[str, list[dict]]]:
     """Three-arm tables for a --since sweep.
 
-    Groups by (target, vus, iterations) across the filtered set. When
-    repeat_group_id is present, runs still sort within their groups, but all
-    matching repeats for a configuration are pooled so a multi-group sweep
-    (e.g. Sep 1–2 gateway restarts) yields one table per VU with all arms.
+    Groups by (target, vus, iterations). When multiple repeat_group_id values
+    exist for the same arm (resume / overlapping re-sweep), keep only the
+    newest group so tables stay at the intended repeat count.
     """
-    by_cfg: dict[tuple, dict[str, list[dict]]] = {}
+    groups: dict[tuple, list[dict]] = {}
     for row in rows:
         m = row["meta"]
-        cfg = (int(m["vus"]), int(m["iterations"]))
-        target = m["target"]
-        by_cfg.setdefault(cfg, {}).setdefault(target, []).append(row)
+        key = (
+            int(m["vus"]),
+            int(m["iterations"]),
+            m["target"],
+            group_key_for(m),
+        )
+        groups.setdefault(key, []).append(row)
 
-    result: list[dict[str, list[dict]]] = []
-    for cfg in sorted(by_cfg.keys()):
-        arms = by_cfg[cfg]
-        for t, runs in arms.items():
-            # Prefer chronological order; keep repeat_group clustering stable.
-            runs.sort(
-                key=lambda r: (
-                    group_key_for(r["meta"]),
-                    r["meta"].get("repeat_index")
-                    if r["meta"].get("repeat_index") is not None
-                    else 0,
-                    r["meta"].get("timestamp_utc") or r["meta"]["run_id"],
-                )
-            )
-            arms[t] = runs
-        result.append(arms)
-    return result
+    newest: dict[tuple, list[dict]] = {}
+    for (vus, iterations, target, _gk), runs in groups.items():
+        runs = sorted(
+            runs,
+            key=lambda r: (
+                r["meta"].get("repeat_index")
+                if r["meta"].get("repeat_index") is not None
+                else 0,
+                r["meta"].get("timestamp_utc") or r["meta"]["run_id"],
+            ),
+        )
+        arm_key = (vus, iterations, target)
+        prev = newest.get(arm_key)
+        if prev is None or group_timestamp(runs) > group_timestamp(prev):
+            newest[arm_key] = runs
+
+    by_cfg: dict[tuple, dict[str, list[dict]]] = {}
+    for (vus, iterations, target), runs in newest.items():
+        by_cfg.setdefault((vus, iterations), {})[target] = runs
+
+    return [by_cfg[cfg] for cfg in sorted(by_cfg.keys())]
 
 
 def median_min_max(values: list[float]) -> tuple[float, float, float] | None:
