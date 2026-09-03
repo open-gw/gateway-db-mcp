@@ -175,6 +175,8 @@ All properties are set in `JC-DBBridge.xml` `<Properties>` (embedded mode) or en
 
 > **Security note:** Never commit passwords to the proxy bundle. In Apigee X, use a KVM reference: `{private.db.password}`. In sidecar mode, use a Kubernetes Secret, AWS Secrets Manager, or Azure Key Vault.
 
+> **TLS handshake failures:** MySQL and MariaDB default to certificate + hostname verification. Against a self-signed or private-CA server the pool fails at startup with a JDBC/TLS error (not a config-parse error). That usually means the trust store is missing the CA, or you need an intentional lab override via `db.sslMode` / `DB_SSL_MODE` — not that the bridge binary is broken.
+
 ### Connection pool (HikariCP)
 
 | Property | Env Var | Default | Description |
