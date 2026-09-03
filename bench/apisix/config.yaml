@@ -1,0 +1,31 @@
+# APISIX node config — file-driven standalone (no etcd).
+# Verified against apache/apisix:3.13.0-debian:
+#   deployment.role=data_plane + config_provider=yaml.
+# Do not follow traditional/etcd Admin API docs for this service.
+# jwt-auth key_claim_name requires APISIX ≥ 3.12 (absent in 3.11).
+#
+# Do NOT omit APISIX_STAND_ALONE in compose: without it the entrypoint runs
+# init_etcd. With it set, check_standalone_config.sh only greps for the keys
+# below (it does not rewrite this file), so :ro mounts are safe.
+#
+# Plugin list is intentionally explicit: the stock image disables
+# opentelemetry unless named here, and listing plugins replaces the default
+# set — so keep this to what the harness actually uses.
+
+apisix:
+  node_listen: 9080
+  enable_ipv6: false
+
+deployment:
+  role: data_plane
+  role_data_plane:
+    config_provider: yaml
+
+plugins:
+  - jwt-auth
+  - limit-count
+  - proxy-rewrite
+  - opentelemetry
+  - prometheus
+  - request-id
+  - real-ip

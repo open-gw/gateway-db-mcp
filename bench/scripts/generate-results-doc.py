@@ -6,19 +6,27 @@ Reads results/runs/ and prints a self-contained markdown document to stdout
 logic via importlib so tables cannot drift from the summariser.
 
 Requires --since <run_id prefix> for a citable sweep, or --latest for the
-newest complete three-arm sweep.
+newest complete five-target sweep.
 """
 from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
+import subprocess
 import sys
+import urllib.error
+import urllib.request
 from collections import Counter
 from pathlib import Path
 
 BENCH_DIR = Path(__file__).resolve().parent.parent
 RUNS_DIR = BENCH_DIR / "results" / "runs"
 SUMMARISE_PATH = Path(__file__).resolve().parent / "summarise-runs.py"
+
+KONG_OPENAPI = "http://localhost:8000/raw/openapi"
+APISIX_OPENAPI = "http://localhost:9080/raw/openapi"
+MANIFEST_TIMEOUT_S = 2.0
 
 
 def load_summarise():
@@ -30,12 +38,48 @@ def load_summarise():
     return mod
 
 
+def _fetch_openapi_json(url: str) -> dict | None:
+    """Return parsed OpenAPI JSON, or None if unreachable / invalid."""
+    # Prefer curl when present (matches acceptance wording); fall back to urllib.
+    try:
+        proc = subprocess.run(
+            ["curl", "-fsS", "--max-time", str(int(MANIFEST_TIMEOUT_S)), url],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return json.loads(proc.stdout)
+    except (OSError, json.JSONDecodeError):
+        pass
+    try:
+        with urllib.request.urlopen(url, timeout=MANIFEST_TIMEOUT_S) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return None
+
+
+def check_tool_manifest_identity() -> str:
+    """Live Kong vs APISIX /raw/openapi identity, or 'not checked' if stack down."""
+    kong = _fetch_openapi_json(KONG_OPENAPI)
+    apisix = _fetch_openapi_json(APISIX_OPENAPI)
+    if kong is None or apisix is None:
+        return "Tool manifest identity (Kong vs APISIX): not checked (stack down)"
+    # Equivalent to: curl … | jq -S  for both sides, then diff.
+    a = json.dumps(kong, sort_keys=True, separators=(",", ":"))
+    b = json.dumps(apisix, sort_keys=True, separators=(",", ":"))
+    if a == b:
+        return "Tool manifest identity (Kong vs APISIX): PASS"
+    return "Tool manifest identity (Kong vs APISIX): FAIL"
+
+
 def section_how_to_reproduce(since: str | None) -> str:
     sweep_note = since or "<sweep-prefix>"
     return f"""## How to reproduce
 
-Exact commands for a citable three-arm sweep (VU 1 / 10 / 50, 20 000 iterations,
-3 repeats). Expected wall time is about **45 minutes** on the recorded host.
+Exact commands for a citable five-target sweep (VU 1 / 10 / 50, 20 000 iterations,
+3 repeats, both gateways). Expected wall time is about **90 minutes** on the
+recorded host (5 targets × 3 VU × 3 repeats = 45 runs).
 
 ```bash
 cd bench
@@ -43,8 +87,8 @@ docker compose -f docker-compose.bench.yml down
 docker compose -f docker-compose.bench.yml up -d --build
 sleep 60
 docker compose -f docker-compose.bench.yml restart jaeger && sleep 20
-./scripts/run-benchmark.sh --sweep --iterations 20000 --repeats 3 --no-span-file \\
-  --note "citable sweep: three-arm, VU 1/10/50, single commit"
+./scripts/run-benchmark.sh --sweep --gateway both --iterations 20000 --repeats 3 \\
+  --no-span-file --note "citable sweep: five-target, VU 1/10/50, single commit"
 ./scripts/summarise-runs.py --since {sweep_note} --format markdown
 ./scripts/generate-results-doc.py --since {sweep_note} > RESULTS.md
 ```
@@ -53,6 +97,37 @@ Allocate at least 8 CPUs and 8 GB to Docker Desktop before measuring. Citable
 latency runs must pass `--no-span-file`. Do not re-run a `status=suspect`
 configuration hoping for a better number; selecting runs by outcome is not
 acceptable — report the flagged count instead.
+
+Canonical targets: `direct`, `kong-passthrough`, `kong-governed`,
+`apisix-passthrough`, `apisix-governed`. Legacy archived aliases `passthrough`
+and `gateway` map to the Kong arms when reading.
+"""
+
+
+def section_platform_coverage() -> str:
+    return """## Platform coverage
+
+| Platform | Status |
+|---|---|
+| Kong Gateway 3.9 (OSS) | Validated end-to-end, latency decomposition measured |
+| Apache APISIX | Validated end-to-end, latency decomposition measured |
+| Apigee X (embedded) | Deployment documented, not validated in this evaluation |
+| Azure API Management | Deployment documented, not validated in this evaluation |
+
+Compose pins `kong:3.9` and `apache/apisix:3.13.0-debian`. Absolute latency is
+harness-bound; cite per-gateway Δ policy and the cross-gateway comparison.
+"""
+
+
+def section_tool_manifest() -> str:
+    line = check_tool_manifest_identity()
+    return f"""## Tool manifest identity
+
+Live check of `GET /raw/openapi` via Kong (`localhost:8000`) and APISIX
+(`localhost:9080`), compared as sorted JSON. Confirms both gateways expose the
+same bridge tool surface on the passthrough path.
+
+**{line}**
 """
 
 
@@ -105,10 +180,10 @@ Taken from `run_metadata.host` and `run_metadata.images` of the selected runs
 | --- | --- |
 {chr(10).join(img_lines)}
 
-**Co-location note.** The load generator, gateway, bridge, database, and
+**Co-location note.** The load generator, gateway(s), bridge, database, and
 identity provider all run on a single machine and share CPU. Absolute latency
 and throughput are therefore properties of this harness. Only the deltas
-between arms transfer, because all three arms carry the same co-location.
+between arms transfer, because all arms carry the same co-location.
 """
 
 
@@ -117,10 +192,13 @@ def section_results(sr, rows: list[dict], allow_mixed: bool, repeats: int | None
     groups = sr.since_arm_maps(rows, expected_repeats=repeats)
     parts = ["## Results tables", ""]
     parts.append(
-        "Three-arm decomposition. Latency from `ep_*{{phase:main}}`; "
-        "throughput re-derived from `iteration_duration{{phase:main}}` "
-        "(stored `throughput_measured` is not trusted). Cells are "
-        "median [min–max] across repeats. Lead with **Δ policy**."
+        "Five-target decomposition (Kong and APISIX). Shared `direct` baseline. "
+        "Per gateway: Δ proxy = passthrough − direct, Δ policy = governed − "
+        "passthrough, Δ total = governed − direct. Latency from "
+        "`ep_*{{phase:main}}`; throughput re-derived from "
+        "`iteration_duration{{phase:main}}` (stored `throughput_measured` is "
+        "not trusted). Cells are median [min–max] across repeats. Lead with "
+        "**Δ policy**; the cross-gateway table compares Kong vs APISIX Δ policy."
     )
     parts.append("")
     for arms in groups:
@@ -133,7 +211,8 @@ def section_provenance(rows: list[dict], sr) -> str:
     lines = [
         "## Provenance table",
         "",
-        "Every run contributing to the figures above.",
+        "Every run contributing to the figures above. Targets are canonical "
+        "(legacy `passthrough`/`gateway` shown as Kong arms).",
         "",
         "| run_id | target | VUs | iterations | git commit | status |",
         "| --- | --- | --- | --- | --- | --- |",
@@ -340,7 +419,7 @@ def main() -> None:
     ap.add_argument(
         "--latest",
         action="store_true",
-        help="use newest complete three-arm sweep instead of --since",
+        help="use newest complete five-target sweep instead of --since",
     )
     ap.add_argument(
         "--repeats",
@@ -355,7 +434,7 @@ def main() -> None:
     if not args.since and not args.latest:
         raise SystemExit(
             "specify --since <run_id prefix> for a citable sweep "
-            "(or --latest for the newest three-arm set)"
+            "(or --latest for the newest five-target set)"
         )
 
     sr = load_summarise()
@@ -395,6 +474,8 @@ def main() -> None:
         "",
         subtitle,
         section_how_to_reproduce(since),
+        section_platform_coverage(),
+        section_tool_manifest(),
         section_hardware(rows),
         section_results(sr, rows, args.allow_mixed_commit, args.repeats),
         section_provenance(rows, sr),
