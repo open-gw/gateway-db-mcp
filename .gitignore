@@ -24,9 +24,13 @@ dependency-reduced-pom.xml
 bench/results/*.json
 bench/results/*.diff
 bench/results/spans.jsonl
+# Ephemeral driver logs (not evidence; only helpful during local debugging)
+bench/results/*.log
 # Immutable provenance-bearing runs ARE tracked:
 #   bench/results/runs/*.json
 #   bench/results/runs/index.jsonl
 
 __pycache__/
 *.pyc
+
+.worktrees/
