@@ -1,0 +1,117 @@
+# APISIX routing — standalone file provider.
+# MUST end with #END or APISIX will not load the file.
+#
+# Mirrors Kong's two-route layout (bench/kong/kong.yml):
+#   /db  — governed: jwt-auth + limit-count + opentelemetry
+#   /raw — passthrough: zero auth/limit/otel plugins (proxy-rewrite only)
+#
+# Both forward to the same bridge:8080. Policy intent matches Kong; syntax
+# and algorithms differ — see bench/README.md "APISIX vs Kong policy equivalence".
+#
+# jwt-auth uses the same RS256 public key and issuer string as Kong, with
+# key_claim_name=iss so Keycloak's iss claim selects the consumer. No live
+# JWKS fetch (parity with Kong's static key).
+#
+# opentelemetry requires plugin_metadata (not plugin_attr) in this file.
+
+plugin_metadata:
+  - id: opentelemetry
+    trace_id_source: x-request-id
+    resource:
+      service.name: apisix-bench
+    collector:
+      address: otel-collector:4318
+      request_timeout: 3
+    batch_span_processor:
+      max_export_batch_size: 256
+      inactive_timeout: 1
+      batch_timeout: 1
+
+consumers:
+  - username: mcp_agent
+    plugins:
+      jwt-auth:
+        key: "http://keycloak:8080/realms/mcp"
+        algorithm: RS256
+        public_key: |
+          -----BEGIN PUBLIC KEY-----
+          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuKpq3V8AEsOkVvm/LfPf
+          vagv8l9PzDU3OR8aefUCdqN5DAAye+w2aExcVoGG8cNkT55XmO7AcQ86Kd34D+Jo
+          HEkPWmhW47wORMpMe/+CYag4hilo66jksQn8xGQQIXNRtty2XFTaIVZU0vYOLiM2
+          29HzKz4NGsm9xjqFRl0BmzfJu6NdbxHCJbjumrJAQE77zp4aNYr8d1spTDXNdYFJ
+          JXJ95LF7Vjr0/DdNSEr70tITidQwk+jo+2X0gncw7cecFm93spM0yAlu5PnSySDh
+          wHEJ62bIIRVy+zoFNGuuEpd2lwbSaVOgmHbGUoeP69PLafx1A78p37VFMLdAGOub
+          YwIDAQAB
+          -----END PUBLIC KEY-----
+
+routes:
+  # Governed: JWT + rate limit + OpenTelemetry.
+  - name: bridge-governed
+    uris:
+      - /db
+      - /db/*
+    methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+      - PATCH
+      - HEAD
+      - OPTIONS
+    plugins:
+      jwt-auth:
+        # Match Keycloak's iss claim (same issuer string Kong uses as jwt key).
+        key_claim_name: iss
+      limit-count:
+        # Far above offered load — measure plugin execution, not throttling.
+        # Fixed-window counter (see README equivalence note vs Kong rate-limiting).
+        count: 1000000
+        time_window: 60
+        rejected_code: 503
+        key: remote_addr
+        policy: local
+      opentelemetry:
+        sampler:
+          name: always_on
+      proxy-rewrite:
+        regex_uri:
+          - "^/db/?(.*)"
+          - "/$1"
+    upstream:
+      type: roundrobin
+      nodes:
+        "bridge:8080": 1
+      timeout:
+        connect: 6
+        send: 60
+        read: 60
+
+  # Passthrough: same upstream, NO jwt / limit / otel.
+  # proxy-rewrite only strips the /raw prefix — do not attach policy plugins.
+  - name: bridge-passthrough
+    uris:
+      - /raw
+      - /raw/*
+    methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+      - PATCH
+      - HEAD
+      - OPTIONS
+    plugins:
+      proxy-rewrite:
+        regex_uri:
+          - "^/raw/?(.*)"
+          - "/$1"
+    upstream:
+      type: roundrobin
+      nodes:
+        "bridge:8080": 1
+      timeout:
+        connect: 6
+        send: 60
+        read: 60
+
+#END

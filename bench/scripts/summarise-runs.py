@@ -10,10 +10,14 @@ re-parsed. Aborted runs (status=aborted) are skipped and counted. Suspect runs
 (status=suspect) are included and flagged — latency is usable; throughput is
 always re-derived from iteration_duration{phase:main}.
 
-Three-arm decomposition (when available):
-  Δ proxy  = passthrough − direct   (Kong hop, no plugins)
-  Δ policy = gateway − passthrough  (governance plugins)  ← paper claim
-  Δ total  = gateway − direct
+Five-target decomposition (when available), per gateway:
+  Δ proxy  = {gw}-passthrough − direct
+  Δ policy = {gw}-governed − {gw}-passthrough   ← paper claim
+  Δ total  = {gw}-governed − direct
+
+Canonical targets: direct, kong-passthrough, kong-governed,
+apisix-passthrough, apisix-governed. Legacy aliases when reading only:
+passthrough → kong-passthrough, gateway → kong-governed.
 
 When repeats share a configuration, every latency and throughput figure is
 reported as median [min–max] across those repeats.
@@ -42,12 +46,34 @@ ENDPOINTS = [
 
 ITER_DURATION_MAIN = "iteration_duration{phase:main}"
 
-ARMS = ("direct", "passthrough", "gateway")
+# Canonical targets written by new runs.
+ARMS = (
+    "direct",
+    "kong-passthrough",
+    "kong-governed",
+    "apisix-passthrough",
+    "apisix-governed",
+)
+
+# Legacy aliases when reading archived runs (do NOT rewrite files).
+LEGACY_TARGET_ALIASES = {
+    "passthrough": "kong-passthrough",
+    "gateway": "kong-governed",
+}
+
 ARM_LABEL = {
     "direct": "direct",
-    "passthrough": "passthrough",
-    "gateway": "governed",
+    "kong-passthrough": "kong-passthrough",
+    "kong-governed": "kong-governed",
+    "apisix-passthrough": "apisix-passthrough",
+    "apisix-governed": "apisix-governed",
 }
+
+# (short_id, display_name, passthrough_arm, governed_arm)
+GATEWAYS = (
+    ("kong", "Kong", "kong-passthrough", "kong-governed"),
+    ("apisix", "APISIX", "apisix-passthrough", "apisix-governed"),
+)
 
 # Relative spread threshold: (max − min) / median > this → mark cell + WARNING.
 SPREAD_WARN = 0.25
@@ -61,8 +87,17 @@ REPEAT_GAP_SECONDS = 10 * 60
 EN_DASH = "\u2013"
 
 
+def canonicalize_target(target: str) -> str:
+    """Map legacy aliases to canonical names; leave unknowns unchanged."""
+    return LEGACY_TARGET_ALIASES.get(target, target)
+
+
 def load_run(path: Path) -> dict | None:
-    """Load a run JSON. Return None when provenance is incomplete."""
+    """Load a run JSON. Return None when provenance is incomplete.
+
+    Normalizes ``run_metadata.target`` in memory (legacy aliases → canonical).
+    Original string is kept as ``run_metadata.target_raw`` for provenance.
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -78,6 +113,9 @@ def load_run(path: Path) -> dict | None:
     if not meta.get("run_id"):
         print(f"Skipped {path.name}: missing run_metadata.run_id", file=sys.stderr)
         return None
+    raw = str(meta["target"])
+    meta["target_raw"] = raw
+    meta["target"] = canonicalize_target(raw)
     return data
 
 
@@ -440,7 +478,7 @@ def since_arm_maps(
     *,
     expected_repeats: int | None = None,
 ) -> list[dict[str, list[dict]]]:
-    """Three-arm tables for a --since sweep (proximity-clustered repeats)."""
+    """Per-VU arm tables for a --since sweep (proximity-clustered repeats)."""
     newest = configs_from_rows(rows, expected_repeats=expected_repeats)
     by_vu_iter: dict[tuple, dict[str, list[dict]]] = {}
     for (target, vus, iterations), runs in newest.items():
@@ -626,6 +664,26 @@ def count_suspect(arms: dict[str, list[dict]]) -> int:
     return n
 
 
+def gateway_present(arms: dict[str, list[dict]], pt: str, gov: str) -> bool:
+    """True when at least one of this gateway's arms is in the group."""
+    return pt in arms or gov in arms
+
+
+def arm_stats(
+    arms: dict[str, list[dict]],
+    target: str,
+    metric_key: str,
+    pct_key: str,
+) -> tuple[float, float, float] | None:
+    if target not in arms:
+        return None
+    return median_min_max(arm_metric_values(arms[target], metric_key, pct_key))
+
+
+def med_of(stats: tuple[float, float, float] | None) -> float | None:
+    return stats[0] if stats else None
+
+
 def repeats_note(
     arms: dict[str, list[dict]],
     expected: int | None,
@@ -685,6 +743,176 @@ def repeats_note(
     return notes
 
 
+def _emit_table(
+    lines: list[str],
+    fmt_kind: str,
+    title: str,
+    headers: list[str],
+    rows_out: list[list[str]],
+) -> None:
+    if fmt_kind == "markdown":
+        lines.append(f"### {title}")
+        lines.append("| " + " | ".join(headers) + " |")
+        lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+        for r in rows_out:
+            lines.append("| " + " | ".join(r) + " |")
+        lines.append("")
+    else:
+        lines.append(title)
+        lines.append("\t".join(headers))
+        for r in rows_out:
+            lines.append("\t".join(r))
+        lines.append("")
+
+
+def render_gateway_latency(
+    arms: dict[str, list[dict]],
+    gw_label: str,
+    pt: str,
+    gov: str,
+    pct_key: str,
+    pct_label: str,
+    title_prefix: str,
+    fmt_kind: str,
+    spread_warnings: list[str],
+) -> list[str]:
+    """One gateway decomposition table for one percentile."""
+    vu = sample_meta(arms)["vus"]
+    headers = [
+        "endpoint",
+        "direct",
+        pt,
+        gov,
+        "Δ proxy",
+        "Δ policy",
+        "Δ total",
+    ]
+    rows_out: list[list[str]] = []
+    for metric_key, label in ENDPOINTS:
+        d = arm_stats(arms, "direct", metric_key, pct_key)
+        p = arm_stats(arms, pt, metric_key, pct_key)
+        g = arm_stats(arms, gov, metric_key, pct_key)
+        for t, stats in (("direct", d), (pt, p), (gov, g)):
+            if spread_wide(stats):
+                spread_warnings.append(
+                    f"WARNING: wide spread VU={vu} {label} {pct_label} "
+                    f"{ARM_LABEL.get(t, t)}: "
+                    f"{fmt_range(stats, digits=2)}"
+                )
+        rows_out.append([
+            label,
+            fmt_range(d, digits=2, warn=spread_wide(d)),
+            fmt_range(p, digits=2, warn=spread_wide(p)),
+            fmt_range(g, digits=2, warn=spread_wide(g)),
+            fmt_delta(med_of(d), med_of(p)),
+            fmt_delta(med_of(p), med_of(g)),
+            fmt_delta(med_of(d), med_of(g)),
+        ])
+
+    lines: list[str] = []
+    _emit_table(
+        lines,
+        fmt_kind,
+        f"{title_prefix} — {gw_label} latency {pct_label} (ms)",
+        headers,
+        rows_out,
+    )
+    return lines
+
+
+def render_cross_gateway_latency(
+    arms: dict[str, list[dict]],
+    pct_key: str,
+    pct_label: str,
+    title_prefix: str,
+    fmt_kind: str,
+) -> list[str]:
+    """Cross-gateway Δ policy comparison at one percentile."""
+    headers = ["endpoint", "Kong Δ policy", "APISIX Δ policy"]
+    rows_out: list[list[str]] = []
+    for metric_key, label in ENDPOINTS:
+        cells = [label]
+        for _gid, _glabel, pt, gov in GATEWAYS:
+            p = arm_stats(arms, pt, metric_key, pct_key)
+            g = arm_stats(arms, gov, metric_key, pct_key)
+            cells.append(fmt_delta(med_of(p), med_of(g)))
+        rows_out.append(cells)
+
+    lines: list[str] = []
+    _emit_table(
+        lines,
+        fmt_kind,
+        f"{title_prefix} — Cross-gateway Δ policy {pct_label} (ms)",
+        headers,
+        rows_out,
+    )
+    return lines
+
+
+def render_gateway_throughput(
+    arms: dict[str, list[dict]],
+    gw_label: str,
+    pt: str,
+    gov: str,
+    fmt_kind: str,
+    spread_warnings: list[str],
+) -> list[str]:
+    """Throughput decomposition for one gateway (shared direct)."""
+    vu = sample_meta(arms)["vus"]
+    thr_stats: dict[str, tuple[float, float, float] | None] = {}
+    wall_stats: dict[str, tuple[float, float, float] | None] = {}
+    for t in ("direct", pt, gov):
+        if t not in arms:
+            thr_stats[t] = None
+            wall_stats[t] = None
+            continue
+        thr_stats[t] = median_min_max(arm_throughput_values(arms[t], "measured"))
+        wall_stats[t] = median_min_max(arm_throughput_values(arms[t], "wall"))
+        if spread_wide(thr_stats[t]):
+            spread_warnings.append(
+                f"WARNING: wide spread VU={vu} throughput_derived "
+                f"{ARM_LABEL.get(t, t)}: {fmt_range(thr_stats[t], digits=1)}"
+            )
+
+    d_t = med_of(thr_stats["direct"])
+    p_t = med_of(thr_stats[pt])
+    g_t = med_of(thr_stats[gov])
+
+    d_cell = fmt_range(thr_stats["direct"], digits=1, warn=spread_wide(thr_stats["direct"]))
+    p_cell = fmt_range(thr_stats[pt], digits=1, warn=spread_wide(thr_stats[pt]))
+    g_cell = fmt_range(thr_stats[gov], digits=1, warn=spread_wide(thr_stats[gov]))
+    wall_d = fmt_range(wall_stats["direct"], digits=1)
+    wall_p = fmt_range(wall_stats[pt], digits=1)
+    wall_g = fmt_range(wall_stats[gov], digits=1)
+
+    lines: list[str] = []
+    if fmt_kind == "markdown":
+        lines.append(
+            f"**{gw_label} throughput_derived** (from iteration_duration{{phase:main}}, req/s): "
+            f"direct {d_cell}, {pt} {p_cell}, {gov} {g_cell}.  "
+            f"Δ proxy cost {pct_delta(d_t, p_t)}, "
+            f"Δ policy cost {pct_delta(p_t, g_t)}, "
+            f"Δ total cost {pct_delta(d_t, g_t)}."
+        )
+        lines.append(
+            f"{gw_label} throughput_wall (reference only): "
+            f"direct {wall_d}, {pt} {wall_p}, {gov} {wall_g}."
+        )
+    else:
+        lines.append(
+            f"{gw_label}_throughput_derived\tdirect={d_cell}\t{pt}={p_cell}\t"
+            f"{gov}={g_cell}\t"
+            f"proxy_cost={pct_delta(d_t, p_t)}\tpolicy_cost={pct_delta(p_t, g_t)}\t"
+            f"total_cost={pct_delta(d_t, g_t)}"
+        )
+        lines.append(
+            f"{gw_label}_throughput_wall\tdirect={wall_d}\t"
+            f"{pt}={wall_p}\t"
+            f"{gov}={wall_g}\t(reference only)"
+        )
+    return lines
+
+
 def render_group(
     arms: dict[str, list[dict]],
     fmt_kind: str,
@@ -716,123 +944,64 @@ def render_group(
             f"Showing available columns only."
         )
 
-    for pct_key, pct_label in (("med", "p50"), ("p(95)", "p95"), ("p(99)", "p99")):
-        headers = [
-            "endpoint",
-            "direct",
-            "passthrough",
-            "governed",
-            "Δ proxy",
-            "Δ policy",
-            "Δ total",
-        ]
-        rows_out: list[list[str]] = []
-        for metric_key, label in ENDPOINTS:
-            stats: dict[str, tuple[float, float, float] | None] = {}
-            for t in ARMS:
-                if t not in arms:
-                    stats[t] = None
-                    continue
-                vals = arm_metric_values(arms[t], metric_key, pct_key)
-                stats[t] = median_min_max(vals)
-                if spread_wide(stats[t]):
-                    spread_warnings.append(
-                        f"WARNING: wide spread VU={vu} {label} {pct_label} "
-                        f"{ARM_LABEL[t]}: "
-                        f"{fmt_range(stats[t], digits=2)}"
-                    )
-            d, p, g = stats.get("direct"), stats.get("passthrough"), stats.get("gateway")
-            d_med = d[0] if d else None
-            p_med = p[0] if p else None
-            g_med = g[0] if g else None
-            rows_out.append([
-                label,
-                fmt_range(d, digits=2, warn=spread_wide(d)),
-                fmt_range(p, digits=2, warn=spread_wide(p)),
-                fmt_range(g, digits=2, warn=spread_wide(g)),
-                fmt_delta(d_med, p_med),  # proxy
-                fmt_delta(p_med, g_med),  # policy
-                fmt_delta(d_med, g_med),  # total
-            ])
+    active_gateways = [
+        gw for gw in GATEWAYS if gateway_present(arms, gw[2], gw[3])
+    ]
+    if not active_gateways:
+        lines.append(
+            "NOTE: no gateway passthrough/governed arms present; "
+            "nothing to decompose."
+        )
+        return "\n".join(lines)
 
-        if fmt_kind == "markdown":
-            lines.append(f"### {title} — latency {pct_label} (ms)")
-            lines.append("| " + " | ".join(headers) + " |")
-            lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
-            for r in rows_out:
-                lines.append("| " + " | ".join(r) + " |")
-            lines.append("")
-        else:
-            lines.append(f"{title} latency {pct_label}")
-            lines.append("\t".join(headers))
-            for r in rows_out:
-                lines.append("\t".join(r))
-            lines.append("")
-
-    # Throughput decomposition from medians across repeats (derived).
-    thr_stats: dict[str, tuple[float, float, float] | None] = {}
-    wall_stats: dict[str, tuple[float, float, float] | None] = {}
-    for t in ARMS:
-        if t not in arms:
-            thr_stats[t] = None
-            wall_stats[t] = None
-            continue
-        thr_stats[t] = median_min_max(arm_throughput_values(arms[t], "measured"))
-        wall_stats[t] = median_min_max(arm_throughput_values(arms[t], "wall"))
-        if spread_wide(thr_stats[t]):
-            spread_warnings.append(
-                f"WARNING: wide spread VU={vu} throughput_derived "
-                f"{ARM_LABEL[t]}: {fmt_range(thr_stats[t], digits=1)}"
+    # Layout: Kong tables (all pct) → APISIX tables → cross-gateway Δ policy.
+    for _gid, gw_label, pt, gov in active_gateways:
+        for pct_key, pct_label in (("med", "p50"), ("p(95)", "p95"), ("p(99)", "p99")):
+            lines.extend(
+                render_gateway_latency(
+                    arms,
+                    gw_label,
+                    pt,
+                    gov,
+                    pct_key,
+                    pct_label,
+                    title,
+                    fmt_kind,
+                    spread_warnings,
+                )
             )
 
-    d_t = thr_stats["direct"][0] if thr_stats["direct"] else None
-    p_t = thr_stats["passthrough"][0] if thr_stats["passthrough"] else None
-    g_t = thr_stats["gateway"][0] if thr_stats["gateway"] else None
+    for pct_key, pct_label in (("med", "p50"), ("p(95)", "p95"), ("p(99)", "p99")):
+        lines.extend(
+            render_cross_gateway_latency(
+                arms, pct_key, pct_label, title, fmt_kind
+            )
+        )
 
-    d_cell = fmt_range(thr_stats["direct"], digits=1, warn=spread_wide(thr_stats["direct"]))
-    p_cell = fmt_range(
-        thr_stats["passthrough"], digits=1, warn=spread_wide(thr_stats["passthrough"])
-    )
-    g_cell = fmt_range(
-        thr_stats["gateway"], digits=1, warn=spread_wide(thr_stats["gateway"])
-    )
-    wall_d = fmt_range(wall_stats["direct"], digits=1)
-    wall_p = fmt_range(wall_stats["passthrough"], digits=1)
-    wall_g = fmt_range(wall_stats["gateway"], digits=1)
+    for _gid, gw_label, pt, gov in active_gateways:
+        lines.extend(
+            render_gateway_throughput(
+                arms, gw_label, pt, gov, fmt_kind, spread_warnings
+            )
+        )
+        if fmt_kind == "markdown":
+            lines.append("")
 
     if fmt_kind == "markdown":
         lines.append(
-            f"**throughput_derived** (from iteration_duration{{phase:main}}, req/s): "
-            f"direct {d_cell}, passthrough {p_cell}, governed {g_cell}.  "
-            f"Δ proxy cost {pct_delta(d_t, p_t)}, "
-            f"Δ policy cost {pct_delta(p_t, g_t)}, "
-            f"Δ total cost {pct_delta(d_t, g_t)}."
-        )
-        lines.append(
-            f"throughput_wall (reference only): "
-            f"direct {wall_d}, passthrough {wall_p}, governed {wall_g}."
-        )
-        lines.append("")
-        lines.append(
-            "Δ proxy = passthrough − direct (Kong hop). "
-            "Δ policy = governed − passthrough (jwt + rate-limit + otel). "
-            "Δ total = governed − direct. "
-            "Lead with Δ policy. "
+            "Δ proxy = {gw}-passthrough − direct. "
+            "Δ policy = {gw}-governed − {gw}-passthrough (jwt + rate-limit + otel). "
+            "Δ total = {gw}-governed − direct. "
+            "Shared `direct` baseline for both gateways. "
+            "Lead with Δ policy; cross-gateway table compares Kong vs APISIX Δ policy. "
             "Latency/throughput cells are median [min–max] across repeats. "
             "Suspect runs are flagged above; their stored throughput_measured "
             "is ignored in favour of the derived figure."
         )
     else:
         lines.append(
-            f"throughput_derived\tdirect={d_cell}\tpassthrough={p_cell}\t"
-            f"governed={g_cell}\t"
-            f"proxy_cost={pct_delta(d_t, p_t)}\tpolicy_cost={pct_delta(p_t, g_t)}\t"
-            f"total_cost={pct_delta(d_t, g_t)}"
-        )
-        lines.append(
-            f"throughput_wall\tdirect={wall_d}\t"
-            f"passthrough={wall_p}\t"
-            f"governed={wall_g}\t(reference only)"
+            "deltas: proxy=passthrough-direct policy=governed-passthrough "
+            "total=governed-direct (per gateway; shared direct)"
         )
 
     # Provenance footer — every run_id that contributed.
@@ -905,21 +1074,29 @@ def main() -> None:
     ap.add_argument(
         "--latest",
         action="store_true",
-        help="newest arm groups per VU (direct / passthrough / gateway when present)",
+        help=(
+            "newest arm groups per VU (canonical targets: direct, "
+            "kong-passthrough, kong-governed, apisix-passthrough, "
+            "apisix-governed; legacy aliases passthrough/gateway map to Kong)"
+        ),
     )
     ap.add_argument(
         "--since",
         metavar="PREFIX",
         help=(
             "summarise the sweep whose run_ids are at or after this timestamp "
-            "prefix (e.g. 20260901T2137); implies three-arm tables like --latest"
+            "prefix (e.g. 20260901T2137); emits Kong + APISIX decomposition "
+            "and cross-gateway Δ policy tables like --latest"
         ),
     )
     ap.add_argument(
         "--run-ids",
         nargs="+",
         metavar="ID",
-        help="compare 2 or 3 run ids (any of direct/passthrough/gateway)",
+        help=(
+            "compare 2–5 run ids (canonical targets or legacy "
+            "passthrough/gateway aliases)"
+        ),
     )
     ap.add_argument(
         "--repeats",
@@ -947,8 +1124,8 @@ def main() -> None:
 
     outputs: list[str] = []
     if args.run_ids:
-        if len(args.run_ids) < 2 or len(args.run_ids) > 3:
-            raise SystemExit("--run-ids expects 2 or 3 run ids")
+        if len(args.run_ids) < 2 or len(args.run_ids) > 5:
+            raise SystemExit("--run-ids expects 2 to 5 run ids")
         by_id: dict[str, dict] = {}
         for path in sorted(RUNS_DIR.glob("*.json")):
             if path.name == "index.jsonl":
@@ -972,7 +1149,11 @@ def main() -> None:
             require_phase_main(row["data"], str(row["path"]))
             t = row["meta"]["target"]
             if t not in ARMS:
-                raise SystemExit(f"run {rid} has unknown target {t!r}")
+                raise SystemExit(
+                    f"run {rid} has unknown target {t!r} "
+                    f"(canonical: {', '.join(ARMS)}; "
+                    f"legacy aliases: passthrough, gateway)"
+                )
             if t in arms:
                 raise SystemExit(f"duplicate target {t} in --run-ids")
             arms[t] = [row]

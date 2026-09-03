@@ -18,7 +18,8 @@ benchmark-publication restriction.
 | `bridge-pg` | same | PostgreSQL instance, `:8083` |
 | `bridge-mariadb` | same Dockerfile with `-Pmariadb` | MariaDB instance, `:8084` |
 | `keycloak` | `quay.io/keycloak/keycloak:26.0` | OAuth 2.1 authorization server, RS256 |
-| `kong` | `kong:3.12` (OSS) | Gateway path, `:8000`. `jwt` + `rate-limiting` + `opentelemetry` |
+| `kong` | `kong:3.9` (OSS) | Gateway path, `:8000`. `jwt` + `rate-limiting` + `opentelemetry` |
+| `apisix` | `apache/apisix:3.13.0-debian` | Second gateway path, `:9080`. `jwt-auth` + `limit-count` + `opentelemetry` (standalone, no etcd) |
 | `otel-collector` | `otel/opentelemetry-collector-contrib` | Spans to Jaeger and to `results/spans.jsonl` |
 | `jaeger` | `jaegertracing/all-in-one` | Trace UI, `:16686` |
 | `k6` | `grafana/k6` | Load generator, profile-gated |
@@ -78,35 +79,68 @@ distort deltas when the VM is undersized. For citable runs, allocate **at least
 
 ### E1 — governance overhead
 
-Three arms isolate what the paper is about:
+Five targets isolate proxy hop vs governance on two gateways (shared `direct`):
 
 | TARGET | Path | Measures |
 |---|---|---|
 | `direct` | `:8080` | Bridge alone |
-| `passthrough` | Kong `:8000/raw` (no plugins) | Proxy hop |
-| `gateway` | Kong `:8000/db` (jwt + rate-limit + otel) | Proxy + governance |
+| `kong-passthrough` | Kong `:8000/raw` (no plugins) | Kong proxy hop |
+| `kong-governed` | Kong `:8000/db` (jwt + rate-limit + otel) | Kong proxy + governance |
+| `apisix-passthrough` | APISIX `:9080/raw` (proxy-rewrite only) | APISIX proxy hop |
+| `apisix-governed` | APISIX `:9080/db` (jwt-auth + limit-count + otel) | APISIX proxy + governance |
 
-`Δ proxy = passthrough − direct`, `Δ policy = gateway − passthrough`,
-`Δ total = gateway − direct`. **Lead with Δ policy.** Absolute throughput on
-this harness is a property of the harness; only the deltas transfer.
+Legacy aliases when **reading** archived runs (summariser normalizes in memory;
+files are never rewritten): `passthrough` → `kong-passthrough`,
+`gateway` → `kong-governed`.
+
+Per gateway: `Δ proxy = {gw}-passthrough − direct`,
+`Δ policy = {gw}-governed − {gw}-passthrough`,
+`Δ total = {gw}-governed − direct`. **Lead with Δ policy.** The summariser also
+emits a **cross-gateway Δ policy** table (Kong vs APISIX at each percentile and
+VU). Absolute throughput on this harness is a property of the harness; only the
+deltas transfer.
 
 ```bash
 # Single run (immutable path under results/runs/); 3 repeats by default
-./scripts/run-benchmark.sh --target direct      --vus 10 --iterations 5000 --no-span-file
-./scripts/run-benchmark.sh --target passthrough --vus 10 --iterations 5000 --no-span-file
-./scripts/run-benchmark.sh --target gateway     --vus 10 --iterations 5000 --no-span-file \
+./scripts/run-benchmark.sh --target direct            --vus 10 --iterations 5000 --no-span-file
+./scripts/run-benchmark.sh --target kong-passthrough  --vus 10 --iterations 5000 --no-span-file
+./scripts/run-benchmark.sh --target kong-governed     --vus 10 --iterations 5000 --no-span-file \
   --note "post-hardening"
+./scripts/run-benchmark.sh --target apisix-passthrough --vus 10 --iterations 5000 --no-span-file
+./scripts/run-benchmark.sh --target apisix-governed    --vus 10 --iterations 5000 --no-span-file
 
-# Full VU sweep (three targets × 1,10,50 × repeats)
-./scripts/run-benchmark.sh --sweep --iterations 5000 --no-span-file --repeats 3
+# Full VU sweep: --gateway kong|apisix|both (default both → five targets × 1,10,50 × repeats)
+./scripts/run-benchmark.sh --sweep --gateway both --iterations 5000 --no-span-file --repeats 3
 
-# Paste-ready three-arm decomposition with provenance footer
+# Paste-ready Kong + APISIX decomposition + cross-gateway Δ policy
 ./scripts/summarise-runs.py --latest --format markdown --repeats 3
 # Or select one sweep by run_id timestamp prefix
 ./scripts/summarise-runs.py --since 20260901T2137 --format markdown
 # Regenerable RESULTS.md (hardware + tables + provenance from metadata)
 ./scripts/generate-results-doc.py --since 20260901T2137 > RESULTS.md
 ```
+
+#### APISIX vs Kong policy equivalence
+
+Intent-equivalent governance on both gateways; not bit-identical plugins.
+
+- **Auth.** Both validate a static RS256 public key against the same Keycloak
+  realm (no live JWKS on the hot path). Kong uses the `jwt` plugin; APISIX uses
+  `jwt-auth` with `key_claim_name: iss` (requires APISIX ≥3.12; compose pins
+  `3.13.0-debian`). The APISIX consumer username is `mcp_agent` (APISIX
+  disallows hyphens in consumer names). Same work class as Kong's jwt plugin.
+- **Rate limit.** Kong `rate-limiting` (local, per-minute) vs APISIX
+  `limit-count` (local fixed window, `time_window: 60`). Both ceilings are set
+  far above offered load. Algorithms differ — not bit-identical; intent is
+  equivalent (plugin executes, does not throttle).
+- **Telemetry.** Both export OTLP to the same collector; `service.name` is
+  `kong-bench` vs `apisix-bench`. APISIX requires `plugin_metadata` for
+  `opentelemetry` in `apisix.yaml` (route plugin alone is not enough).
+- **Passthrough.** Kong uses route `strip_path`; APISIX uses `proxy-rewrite`
+  only to strip the path prefix — not a governance plugin. Neither passthrough
+  path has jwt / rate-limit / otel.
+- **Deployment.** APISIX runs standalone (no etcd). File-provider YAML must end
+  with `#END` or APISIX will not load it.
 
 **Citable latency runs should pass `--no-span-file`.** That starts the collector
 with only the Jaeger exporter (see `collector-jaeger-only.yaml`). The file
@@ -165,8 +199,8 @@ such artifacts so far; they belong in the paper's threats-to-validity discussion
    DNS-retried and dropped spans in large batches (~8,200 at a time),
    back-pressuring the Kong OpenTelemetry plugin. Governed throughput collapsed
    while the failure looked like "policy cost." Preflight now requires Jaeger
-   running, clean collector logs, and `kong-bench` appearing in
-   `/api/services` before k6 starts.
+   running, clean collector logs, and the governed gateway's service name
+   (`kong-bench` or `apisix-bench`) appearing in `/api/services` before k6 starts.
 4. **Unbounded Jaeger store** — `jaeger-all-in-one` defaults to an unbounded
    in-memory span store. Three identical gateway runs (VU=1, 20k iterations)
    measured 678 → 669 → 405 req/s as the store grew from fresh to ~40k traces
@@ -240,17 +274,17 @@ Reviewer-reproducible, unlike a vendor console screenshot.
 
 ## Platform coverage this produces
 
-| Platform | Status after this harness |
+| Platform | Status |
 |---|---|
-| Kong Gateway 3.12 (OSS) | Validated end-to-end locally |
-| MySQL 8.0 | Validated |
-| PostgreSQL 16 | Validated |
-| Apigee X embedded | Documented, not validated |
-| Azure API Management | Documented, not validated |
+| Kong Gateway 3.9 (OSS) | Validated end-to-end, latency decomposition measured |
+| Apache APISIX | Validated end-to-end, latency decomposition measured |
+| Apigee X (embedded) | Deployment documented, not validated in this evaluation |
+| Azure API Management | Deployment documented, not validated in this evaluation |
 
-That table goes in the paper as written. It is what Reviewer 2 (point 3) and
-Reviewer 3 (point 2) both asked for, and claiming more than it says is what
-drew the objection in the first place.
+MySQL 8.0, PostgreSQL 16, and MariaDB 11.4 are validated as bridge backends
+(E4). That gateway table goes in the paper as written. It is what Reviewer 2
+(point 3) and Reviewer 3 (point 2) both asked for, and claiming more than it
+says is what drew the objection in the first place.
 
 ## Notes and gotchas
 

@@ -20,21 +20,41 @@ REPEATS=3
 NO_SPAN_FILE=0
 RESET_TELEMETRY=0
 RESET_TELEMETRY_ONCE=0
+GATEWAY_FILTER="both"
 
-LATENCY_SERVICES=(mysql-a bridge keycloak kong otel-collector jaeger)
+LATENCY_SERVICES=(mysql-a bridge keycloak kong apisix otel-collector jaeger)
 EXTRA_SERVICES=(mysql-b bridge-b postgres bridge-pg mariadb bridge-mariadb)
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/run-benchmark.sh --target direct|passthrough|gateway --vus N --iterations N
-      [--note TEXT] [--force] [--allow-extra-containers] [--repeats N] [--no-span-file]
-      [--reset-telemetry | --reset-telemetry-once]
+  ./scripts/run-benchmark.sh --target TARGET --vus N --iterations N
+      [--gateway kong|apisix|both] [--note TEXT] [--force] [--allow-extra-containers]
+      [--repeats N] [--no-span-file] [--reset-telemetry | --reset-telemetry-once]
   ./scripts/run-benchmark.sh --sweep --iterations N
-      [--note TEXT] [--force] [--allow-extra-containers] [--repeats N] [--no-span-file]
-      [--reset-telemetry | --reset-telemetry-once]
+      [--gateway kong|apisix|both] [--note TEXT] [--force] [--allow-extra-containers]
+      [--repeats N] [--no-span-file] [--reset-telemetry | --reset-telemetry-once]
 
-Telemetry reset (gateway only; diagnostic — not for citable runs):
+Targets (canonical):
+  direct
+  kong-passthrough, kong-governed
+  apisix-passthrough, apisix-governed
+
+Deprecated aliases (normalized before run):
+  passthrough → kong-passthrough
+  gateway     → kong-governed
+
+--gateway filters which arms a --sweep includes (default: both):
+  both   — all five targets (direct + kong-* + apisix-*)
+  kong   — direct, kong-passthrough, kong-governed
+  apisix — direct, apisix-passthrough, apisix-governed
+Single --target runs ignore --gateway (except known-target validation).
+
+A full sweep (--gateway both, VU 1/10/50, --repeats 3) is 45 runs, roughly 90 minutes.
+With --sweep, optional --vus N restricts the sweep to that single VU level
+(e.g. --sweep --vus 1 for a short five-target smoke).
+
+Telemetry reset (governed targets only; diagnostic — not for citable runs):
   (default)                 no per-run reset
   --reset-telemetry         full reset before every governed run/repeat
   --reset-telemetry-once    full reset once before the first run (sweep or repeats)
@@ -55,6 +75,7 @@ while [[ $# -gt 0 ]]; do
     --no-span-file) NO_SPAN_FILE=1; shift ;;
     --reset-telemetry) RESET_TELEMETRY=1; shift ;;
     --reset-telemetry-once) RESET_TELEMETRY_ONCE=1; shift ;;
+    --gateway) GATEWAY_FILTER="${2:-}"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "Unknown arg: $1" >&2; usage ;;
   esac
@@ -86,11 +107,52 @@ else
 fi
 TELEMETRY_ONCE_DONE=0
 
-if [[ "$SWEEP" -ne 1 ]]; then
-  case "$TARGET" in
-    direct|passthrough|gateway) ;;
-    *) echo "REFUSE: --target must be direct|passthrough|gateway (got '$TARGET')" >&2; exit 2 ;;
+case "$GATEWAY_FILTER" in
+  kong|apisix|both) ;;
+  *) echo "REFUSE: --gateway must be kong|apisix|both (got '$GATEWAY_FILTER')" >&2; exit 2 ;;
+esac
+
+# Canonicalize deprecated aliases; map target → gateway metadata field.
+canonicalize_target() {
+  case "$1" in
+    passthrough) printf '%s\n' "kong-passthrough" ;;
+    gateway) printf '%s\n' "kong-governed" ;;
+    direct|kong-passthrough|kong-governed|apisix-passthrough|apisix-governed) printf '%s\n' "$1" ;;
+    *) return 1 ;;
   esac
+}
+
+gateway_of_target() {
+  case "$1" in
+    direct) printf '%s\n' "none" ;;
+    kong-passthrough|kong-governed) printf '%s\n' "kong" ;;
+    apisix-passthrough|apisix-governed) printf '%s\n' "apisix" ;;
+    *) return 1 ;;
+  esac
+}
+
+is_governed_target() {
+  case "$1" in
+    kong-governed|apisix-governed) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+jaeger_service_of_target() {
+  case "$1" in
+    kong-governed) printf '%s\n' "kong-bench" ;;
+    apisix-governed) printf '%s\n' "apisix-bench" ;;
+    *) printf '%s\n' "" ;;
+  esac
+}
+
+if [[ "$SWEEP" -ne 1 ]]; then
+  _raw_target="$TARGET"
+  if ! TARGET="$(canonicalize_target "$_raw_target")"; then
+    echo "REFUSE: --target must be direct|kong-passthrough|kong-governed|apisix-passthrough|apisix-governed (or aliases passthrough|gateway) (got '$_raw_target')" >&2
+    exit 2
+  fi
+  unset _raw_target
 fi
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing command: $1" >&2; exit 1; }; }
@@ -136,7 +198,8 @@ fi
 # ── base container health ────────────────────────────────────────────────────
 bad=0
 for c in gatewaydb-mcp-bench-bridge-1 gatewaydb-mcp-bench-kong-1 \
-         gatewaydb-mcp-bench-keycloak-1 gatewaydb-mcp-bench-mysql-a-1; do
+         gatewaydb-mcp-bench-apisix-1 gatewaydb-mcp-bench-keycloak-1 \
+         gatewaydb-mcp-bench-mysql-a-1; do
   require_healthy "$c" || bad=1
 done
 if [[ "$bad" -ne 0 ]]; then
@@ -242,6 +305,7 @@ def digest(cname):
 print(json.dumps({
     "bridge": digest("gatewaydb-mcp-bench-bridge-1"),
     "kong": digest("gatewaydb-mcp-bench-kong-1"),
+    "apisix": digest("gatewaydb-mcp-bench-apisix-1"),
     "mysql": digest("gatewaydb-mcp-bench-mysql-a-1"),
     "keycloak": digest("gatewaydb-mcp-bench-keycloak-1"),
 }))
@@ -270,7 +334,7 @@ PY
 K6_VERSION=$(docker image inspect grafana/k6:0.54.0 --format '{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null || true)
 [[ -n "$K6_VERSION" && "$K6_VERSION" != "<no value>" ]] || K6_VERSION="0.54.0"
 
-# ── Jaeger store reset (gateway only) ────────────────────────────────────────
+# ── Jaeger store reset (governed targets only) ────────────────────────────────
 # Empty in-memory store before every governed run so throughput is not a
 # function of prior run ordering. See README "Telemetry confounds".
 JAEGER_CONTAINER=gatewaydb-mcp-bench-jaeger-1
@@ -320,10 +384,12 @@ wait_jaeger_ui() {
   done
 }
 
-# True when /api/services has no kong-bench (store empty of governed traces).
-jaeger_store_empty_of_kong() {
-  python3 - <<'PY'
-import json, sys, urllib.request
+# True when /api/services has none of the given governed service names.
+# Args: one or more Jaeger service.name values (e.g. kong-bench apisix-bench).
+jaeger_store_empty_of() {
+  JAEGER_EMPTY_SVCS="$*" python3 - <<'PY'
+import json, os, sys, urllib.request
+want = [s for s in os.environ.get("JAEGER_EMPTY_SVCS", "").split() if s]
 with urllib.request.urlopen("http://localhost:16686/api/services", timeout=15) as resp:
     payload = json.loads(resp.read().decode())
 names = payload if isinstance(payload, list) else payload.get("data", payload)
@@ -333,7 +399,8 @@ for n in (names or []):
         flat.append(n)
     elif isinstance(n, dict) and "name" in n:
         flat.append(n["name"])
-sys.exit(0 if "kong-bench" not in flat else 1)
+present = [s for s in want if s in flat]
+sys.exit(0 if not present else 1)
 PY
 }
 
@@ -350,7 +417,8 @@ start_otel_collector() {
   done
 }
 
-# Stop collector, wipe Jaeger, confirm no kong-bench. Leaves collector stopped.
+# Stop collector, wipe Jaeger, confirm no governed services. Leaves collector stopped.
+# Checks both kong-bench and apisix-bench: either gateway may flush during drain.
 wipe_jaeger_store() {
   echo "Stopping otel-collector…" >&2
   "${COMPOSE[@]}" stop otel-collector >/dev/null || true
@@ -358,7 +426,7 @@ wipe_jaeger_store() {
   echo "Restarting jaeger for empty in-memory store…" >&2
   "${COMPOSE[@]}" restart jaeger
   wait_jaeger_ui
-  jaeger_store_empty_of_kong
+  jaeger_store_empty_of kong-bench apisix-bench
 }
 
 # Soft pre-sweep clean start: restart Jaeger only (no Kong bounce). Collector
@@ -380,54 +448,64 @@ restart_jaeger_once() {
 }
 
 # Full diagnostic reset (opt-in via --reset-telemetry / --reset-telemetry-once).
-# Kong buffers OTLP while the collector is down; restarting Jaeger alone leaves
-# buffered spans that flush into the new store, so this escalates to bouncing
-# Kong. Introduces more variance than it removes — not for citable runs.
+# Gateways buffer OTLP while the collector is down; restarting Jaeger alone leaves
+# buffered spans that flush into the new store, so this escalates to bouncing the
+# gateway under test (kong and/or apisix). Introduces more variance than it
+# removes — not for citable runs.
+# Args: gateway compose service name(s) to restart — "kong", "apisix", or both.
 reset_jaeger_store() {
   local JAEGER_DRAIN_S="${JAEGER_DRAIN_S:-8}"
-  local attempt
+  local attempt gw container deadline
+  local -a gateways=("$@")
+  if [[ ${#gateways[@]} -eq 0 ]]; then
+    gateways=(kong)
+  fi
 
   if ! wipe_jaeger_store; then
-    echo "WARNING: kong-bench present after first wipe; retrying…" >&2
+    echo "WARNING: governed services present after first wipe; retrying…" >&2
     if ! wipe_jaeger_store; then
-      echo "REFUSE: jaeger store still contains kong-bench after reset" >&2
+      echo "REFUSE: jaeger store still contains kong-bench/apisix-bench after reset" >&2
       exit 1
     fi
   fi
 
   for attempt in 1 2; do
-    echo "Draining Kong OTLP buffer into disposable Jaeger store (${JAEGER_DRAIN_S}s, attempt $attempt)…" >&2
+    echo "Draining gateway OTLP buffer into disposable Jaeger store (${JAEGER_DRAIN_S}s, attempt $attempt)…" >&2
     start_otel_collector
     sleep "$JAEGER_DRAIN_S"
     if ! wipe_jaeger_store; then
-      echo "WARNING: kong-bench still present after drain wipe attempt $attempt…" >&2
+      echo "WARNING: governed services still present after drain wipe attempt $attempt…" >&2
     fi
   done
 
-  echo "Restarting Kong to drop residual OTLP buffer…" >&2
-  "${COMPOSE[@]}" restart kong
-  local deadline=$((SECONDS + 120))
-  until docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
-        gatewaydb-mcp-bench-kong-1 2>/dev/null | grep -Eq '^(healthy|running)$'; do
-    if (( SECONDS >= deadline )); then
-      echo "REFUSE: kong did not become healthy within 120s after restart" >&2
-      exit 1
-    fi
-    sleep 2
+  for gw in "${gateways[@]}"; do
+    echo "Restarting ${gw} to drop residual OTLP buffer…" >&2
+    "${COMPOSE[@]}" restart "$gw"
+    container="gatewaydb-mcp-bench-${gw}-1"
+    deadline=$((SECONDS + 120))
+    until docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+          "$container" 2>/dev/null | grep -Eq '^(healthy|running)$'; do
+      if (( SECONDS >= deadline )); then
+        echo "REFUSE: ${gw} did not become healthy within 120s after restart" >&2
+        exit 1
+      fi
+      sleep 2
+    done
   done
   start_otel_collector
   sleep 3
   if ! wipe_jaeger_store; then
-    echo "REFUSE: jaeger store not empty after Kong restart + drain" >&2
+    echo "REFUSE: jaeger store not empty after gateway restart + drain" >&2
     exit 1
   fi
-  echo "Jaeger store empty; Kong restarted; collector left stopped for preflight." >&2
+  echo "Jaeger store empty; gateway(s) restarted (${gateways[*]}); collector left stopped for preflight." >&2
 }
+
 
 
 # ── preflight ────────────────────────────────────────────────────────────────
 # Returns JSON map of check -> pass|fail|skipped via stdout. Exits 1 on any fail.
-# For gateway with a fresh opt-in reset: empty-store gates run while the
+# For governed targets with a fresh opt-in reset: empty-store gates run while the
 # collector is still stopped; the collector is started only after those gates
 # pass. Without a fresh reset the collector is already up and the store may
 # hold prior traces — only the RSS ceiling is enforced.
@@ -489,7 +567,11 @@ def service_names(payload):
             flat.append(n["name"])
     return flat
 
-if target != "gateway":
+governed = target in ("kong-governed", "apisix-governed")
+# After opt-in reset, either gateway may have flushed — both service names mean "not empty".
+empty_svcs = ("kong-bench", "apisix-bench")
+
+if not governed:
     for n in ("jaeger_reset", "jaeger_running", "jaeger_memory", "jaeger_trace_count"):
         skip(n)
 else:
@@ -528,18 +610,19 @@ else:
             with urllib.request.urlopen("http://localhost:16686/api/services", timeout=15) as resp:
                 services = json.loads(resp.read().decode())
             flat = service_names(services)
+            present = [s for s in empty_svcs if s in flat]
             n_traces = 0
-            if "kong-bench" in flat:
-                q = urllib.parse.urlencode({"service": "kong-bench", "limit": "20"})
+            for svc in present:
+                q = urllib.parse.urlencode({"service": svc, "limit": "20"})
                 with urllib.request.urlopen(f"http://localhost:16686/api/traces?{q}", timeout=15) as resp:
                     body = json.loads(resp.read().decode())
                 data = body.get("data", body) if isinstance(body, dict) else body
-                n_traces = len(data or [])
+                n_traces += len(data or [])
             checks["jaeger_trace_count_value"] = n_traces
-            if n_traces > 0 or "kong-bench" in flat:
+            if n_traces > 0 or present:
                 fail(
                     "jaeger_trace_count",
-                    f"store not empty after reset (services={flat!r}, kong-bench traces≈{n_traces})",
+                    f"store not empty after reset (services={flat!r}, present={present!r}, traces≈{n_traces})",
                 )
             else:
                 pass_("jaeger_trace_count")
@@ -555,7 +638,7 @@ if failed:
 PY
   ) || return 1
 
-  if [[ "$target" == "gateway" && "$fresh_reset" -eq 1 ]]; then
+  if is_governed_target "$target" && [[ "$fresh_reset" -eq 1 ]]; then
     start_otel_collector
     echo "settle ${JAEGER_RESET_SETTLE_S}s after collector start..." >&2
     sleep "$JAEGER_RESET_SETTLE_S"
@@ -593,17 +676,19 @@ def service_names(payload):
             flat.append(n["name"])
     return flat
 
+# Always assert Kong + APISIX routes (both in default stack).
 try:
-    code_db = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:8000/db/tables")
-    code_raw = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:8000/raw/tables")
-    if code_db != "401":
-        fail("routes_db_401", f"/db/tables without token returned {code_db}")
-    else:
-        pass_("routes_db_401")
-    if code_raw != "200":
-        fail("routes_raw_200", f"/raw/tables without token returned {code_raw}")
-    else:
-        pass_("routes_raw_200")
+    for label, base in (("kong", "http://localhost:8000"), ("apisix", "http://localhost:9080")):
+        code_db = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"{base}/db/tables")
+        code_raw = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"{base}/raw/tables")
+        if code_db != "401":
+            fail(f"routes_{label}_db_401", f"{base}/db/tables without token returned {code_db}")
+        else:
+            pass_(f"routes_{label}_db_401")
+        if code_raw != "200":
+            fail(f"routes_{label}_raw_200", f"{base}/raw/tables without token returned {code_raw}")
+        else:
+            pass_(f"routes_{label}_raw_200")
 except Exception as e:
     fail("routes", str(e))
 
@@ -614,7 +699,14 @@ if os.environ.get("GIT_DIRTY", "false").lower() == "true" and os.environ.get("FO
 else:
     pass_("git_clean")
 
-if target != "gateway":
+governed = target in ("kong-governed", "apisix-governed")
+jaeger_svc = {"kong-governed": "kong-bench", "apisix-governed": "apisix-bench"}.get(target, "")
+probe_url = {
+    "kong-governed": "http://localhost:8000/db/tables",
+    "apisix-governed": "http://localhost:9080/db/tables",
+}.get(target, "")
+
+if not governed:
     for n in ("otel_collector_running", "otel_collector_logs_clean", "traces_arriving"):
         skip(n)
 else:
@@ -662,7 +754,7 @@ else:
         for _attempt in range(8):
             for _ in range(5):
                 r = urllib.request.Request(
-                    "http://localhost:8000/db/tables",
+                    probe_url,
                     headers={"Authorization": f"Bearer {token}"},
                 )
                 with urllib.request.urlopen(r, timeout=15) as resp:
@@ -671,10 +763,10 @@ else:
             with urllib.request.urlopen("http://localhost:16686/api/services", timeout=15) as resp:
                 services = json.loads(resp.read().decode())
             flat = service_names(services)
-            if "kong-bench" in flat:
+            if jaeger_svc in flat:
                 break
-        if "kong-bench" not in flat:
-            fail("traces_arriving", f"jaeger services={flat!r} — missing kong-bench")
+        if jaeger_svc not in flat:
+            fail("traces_arriving", f"jaeger services={flat!r} — missing {jaeger_svc}")
         else:
             pass_("traces_arriving")
     except Exception as e:
@@ -704,20 +796,28 @@ run_one() {
   local ts_compact ts_iso run_id out_path meta preflight spans_start spans_end k6_rc status
   local jaeger_mem_start="" jaeger_mem_end=""
   local fresh_reset=0 telemetry_reset_seconds="" reset_t0
+  local gateway_meta reset_gw
+
+  if ! target="$(canonicalize_target "$target")"; then
+    echo "REFUSE: unknown target '$1'" >&2
+    exit 2
+  fi
+  gateway_meta="$(gateway_of_target "$target")"
 
   # Truncate spans before each run (and each repeat).
   : > results/spans.jsonl
   spans_start=$(wc -c < results/spans.jsonl | tr -d ' ')
 
-  if [[ "$target" == "gateway" ]]; then
+  if is_governed_target "$target"; then
+    reset_gw="$gateway_meta"  # kong or apisix
     if [[ "$TELEMETRY_RESET_MODE" == "per_run" ]]; then
       reset_t0=$SECONDS
-      reset_jaeger_store
+      reset_jaeger_store "$reset_gw"
       telemetry_reset_seconds=$((SECONDS - reset_t0))
       fresh_reset=1
     elif [[ "$TELEMETRY_RESET_MODE" == "once" && "$TELEMETRY_ONCE_DONE" -eq 0 ]]; then
       reset_t0=$SECONDS
-      reset_jaeger_store
+      reset_jaeger_store "$reset_gw"
       telemetry_reset_seconds=$((SECONDS - reset_t0))
       fresh_reset=1
       TELEMETRY_ONCE_DONE=1
@@ -730,14 +830,14 @@ run_one() {
 
   preflight=$(run_preflight "$target" "$fresh_reset") || exit 1
 
-  if [[ "$target" == "gateway" ]]; then
+  if is_governed_target "$target"; then
     jaeger_mem_start=$(jaeger_memory_mb)
     # Start-RSS ceiling only applies after a fresh opt-in reset; without a reset
     # the store may already hold prior traces up to MEMORY_MAX_TRACES.
     if [[ "$fresh_reset" -eq 1 ]]; then
       if awk -v m="$jaeger_mem_start" -v lim="$JAEGER_MEM_START_MAX_MB" 'BEGIN { exit (m+0 > lim+0) ? 0 : 1 }'; then
         echo "REFUSE: jaeger_memory_mb_start=${jaeger_mem_start} exceeds JAEGER_MEM_START_MAX_MB=${JAEGER_MEM_START_MAX_MB}" >&2
-        echo "        Kong likely flushed a buffered OTLP queue into the store after reset — not a comparable run." >&2
+        echo "        Gateway likely flushed a buffered OTLP queue into the store after reset — not a comparable run." >&2
         exit 1
       fi
     fi
@@ -757,7 +857,7 @@ run_one() {
   fi
 
   meta=$(
-    export RUN_ID="$run_id" TS="$ts_iso" TARGET="$target" VUS="$vus" ITER="$iterations"
+    export RUN_ID="$run_id" TS="$ts_iso" TARGET="$target" GATEWAY="$gateway_meta" VUS="$vus" ITER="$iterations"
     export GIT_COMMIT GIT_DIRTY GIT_BRANCH K6_VERSION NOTE
     export IMAGES_JSON HOST_JSON BRIDGE_CFG_JSON CONTAINERS_RUNNING_JSON
     export PREFLIGHT_JSON="$preflight" REPEAT_INDEX="$repeat_index" REPEAT_GROUP="$repeat_group_id"
@@ -770,6 +870,7 @@ meta = {
   "run_id": os.environ["RUN_ID"],
   "timestamp_utc": os.environ["TS"],
   "target": os.environ["TARGET"],
+  "gateway": os.environ["GATEWAY"],
   "vus": int(os.environ["VUS"]),
   "iterations": int(os.environ["ITER"]),
   "git_commit": os.environ["GIT_COMMIT"],
@@ -811,7 +912,7 @@ PY
   set -e
 
   spans_end=$(wc -c < results/spans.jsonl | tr -d ' ')
-  if [[ "$target" == "gateway" ]]; then
+  if is_governed_target "$target"; then
     jaeger_mem_end=$(jaeger_memory_mb) || jaeger_mem_end=""
   fi
 
@@ -919,8 +1020,18 @@ elif [[ "$SWEEP" -eq 1 ]]; then
 fi
 
 if [[ "$SWEEP" -eq 1 ]]; then
-  for target in direct passthrough gateway; do
-    for vus in 1 10 50; do
+  case "$GATEWAY_FILTER" in
+    both)   SWEEP_TARGETS=(direct kong-passthrough kong-governed apisix-passthrough apisix-governed) ;;
+    kong)   SWEEP_TARGETS=(direct kong-passthrough kong-governed) ;;
+    apisix) SWEEP_TARGETS=(direct apisix-passthrough apisix-governed) ;;
+  esac
+  if [[ -n "$VUS" ]]; then
+    SWEEP_VUS=("$VUS")
+  else
+    SWEEP_VUS=(1 10 50)
+  fi
+  for target in "${SWEEP_TARGETS[@]}"; do
+    for vus in "${SWEEP_VUS[@]}"; do
       run_config "$target" "$vus" "$ITERATIONS"
       echo "settle 5s…" >&2
       sleep 5

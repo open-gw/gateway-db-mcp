@@ -1,25 +1,29 @@
 // E1 — governance overhead.
 //
-// Three arms on the same workload:
-//   direct       — client → bridge :8080
-//   passthrough  — client → Kong /raw (no plugins) → bridge
-//   gateway      — client → Kong /db (jwt + rate-limit + otel) → bridge
+// Five arms on the same workload (two gateways × passthrough/governed + direct):
+//   direct              — client → bridge :8080
+//   kong-passthrough    — client → Kong /raw (no plugins) → bridge
+//   kong-governed       — client → Kong /db (jwt + rate-limit + otel) → bridge
+//   apisix-passthrough  — client → APISIX /raw (no policy plugins) → bridge
+//   apisix-governed     — client → APISIX /db (jwt-auth + limit-count + otel) → bridge
 //
-//   passthrough − direct  = proxy hop / proxying cost
-//   gateway − passthrough = governance policy cost  ← paper claim
-//   gateway − direct      = total mediation cost
+// Deprecated aliases (still accepted): passthrough → kong-passthrough,
+// gateway → kong-governed.
+//
+// Per gateway:
+//   {gw}-passthrough − direct     = proxy hop cost
+//   {gw}-governed − {gw}-passthrough = governance policy cost  ← paper claim
 //
 // Absolute numbers from a laptop under Docker are meaningless to a reviewer.
 // The deltas are not, because shared virtualisation overhead cancels.
 //
 // Prefer the wrapper so every run is immutable and self-describing:
 //
-//   ./scripts/run-benchmark.sh --target direct      --vus 10 --iterations 5000
-//   ./scripts/run-benchmark.sh --target passthrough --vus 10 --iterations 5000
-//   ./scripts/run-benchmark.sh --target gateway     --vus 10 --iterations 5000
-//
-// Direct k6 invocation still works, but writes under results/runs/ only when
-// RUN_ID and RUN_METADATA_JSON are supplied by the wrapper.
+//   ./scripts/run-benchmark.sh --target direct --vus 10 --iterations 5000
+//   ./scripts/run-benchmark.sh --target kong-passthrough --vus 10 --iterations 5000
+//   ./scripts/run-benchmark.sh --target kong-governed --vus 10 --iterations 5000
+//   ./scripts/run-benchmark.sh --target apisix-passthrough --vus 10 --iterations 5000
+//   ./scripts/run-benchmark.sh --target apisix-governed --vus 10 --iterations 5000
 
 import http from 'k6/http';
 import { check } from 'k6';
@@ -30,22 +34,37 @@ const TARGET = __ENV.TARGET || 'direct';
 const VUS = parseInt(__ENV.VUS || '10', 10);
 const ITERATIONS = parseInt(__ENV.ITERATIONS || '1000', 10);
 
-function resolveBase(target) {
-  if (target === 'gateway') {
-    return __ENV.GATEWAY_URL || 'http://kong:8000/db';
-  }
-  if (target === 'passthrough') {
-    return __ENV.PASSTHROUGH_URL || 'http://kong:8000/raw';
-  }
-  if (target === 'direct') {
-    return __ENV.DIRECT_URL || 'http://bridge:8080';
-  }
-  throw new Error(
-    `Unknown TARGET=${target}; expected direct|passthrough|gateway`,
-  );
+// Canonicalise deprecated Kong aliases so URL selection and auth match.
+function canonicalizeTarget(target) {
+  if (target === 'passthrough') return 'kong-passthrough';
+  if (target === 'gateway') return 'kong-governed';
+  return target;
 }
 
-const BASE = resolveBase(TARGET);
+const CANONICAL = canonicalizeTarget(TARGET);
+
+function resolveBase(target) {
+  switch (target) {
+    case 'kong-governed':
+      return __ENV.KONG_GOVERNED_URL || __ENV.GATEWAY_URL || 'http://kong:8000/db';
+    case 'kong-passthrough':
+      return __ENV.KONG_PASSTHROUGH_URL || __ENV.PASSTHROUGH_URL || 'http://kong:8000/raw';
+    case 'apisix-governed':
+      return __ENV.APISIX_GOVERNED_URL || 'http://apisix:9080/db';
+    case 'apisix-passthrough':
+      return __ENV.APISIX_PASSTHROUGH_URL || 'http://apisix:9080/raw';
+    case 'direct':
+      return __ENV.DIRECT_URL || 'http://bridge:8080';
+    default:
+      throw new Error(
+        `Unknown TARGET=${TARGET}; expected direct|kong-passthrough|kong-governed|` +
+        `apisix-passthrough|apisix-governed (aliases: passthrough, gateway)`,
+      );
+  }
+}
+
+const BASE = resolveBase(CANONICAL);
+const IS_GOVERNED = CANONICAL === 'kong-governed' || CANONICAL === 'apisix-governed';
 
 const KEYCLOAK = __ENV.KEYCLOAK_URL || 'http://keycloak:8080';
 
@@ -104,7 +123,7 @@ const REQUESTS_PER_ITERATION = ENDPOINT_STEPS.length;
 
 export const options = {
   scenarios: {
-    // Discarded. JIT warmup, HikariCP pool fill, Kong plugin compile.
+    // Discarded. JIT warmup, HikariCP pool fill, gateway plugin compile.
     warmup: {
       executor: 'constant-vus',
       vus: 3,
@@ -139,9 +158,9 @@ export const options = {
 };
 
 export function setup() {
-  // Token only for the governed arm. Passthrough must NOT send Authorization —
-  // that would add header-parsing work Kong would otherwise skip.
-  if (TARGET !== 'gateway') return { token: null };
+  // Token only for governed arms. Passthrough must NOT send Authorization —
+  // that would give the gateway header-parsing work it would otherwise skip.
+  if (!IS_GOVERNED) return { token: null };
 
   const res = http.post(
     `${KEYCLOAK}/realms/mcp/protocol/openid-connect/token`,

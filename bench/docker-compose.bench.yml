@@ -10,9 +10,10 @@
 #   docker compose -f docker-compose.bench.yml --profile extra up -d  # + E3/E4 services
 #   docker compose -f docker-compose.bench.yml --profile bench run --rm k6 run /scripts/latency.js
 #
-# Default services = E1 latency set. Profile `extra` = mysql-b, bridge-b, postgres,
-# bridge-pg, mariadb, bridge-mariadb (E3/E4 only). Do not run E1 while `extra` is up —
-# those containers contend for the same Docker VM CPUs and confound the gateway-cost delta.
+# Default services = E1 latency set (both Kong and APISIX). Profile `extra` =
+# mysql-b, bridge-b, postgres, bridge-pg, mariadb, bridge-mariadb (E3/E4 only).
+# Do not run E1 while `extra` is up — those containers contend for the same
+# Docker VM CPUs and confound the gateway-cost delta.
 #
 # Run from the bench/ directory. Build context is the repository root.
 
@@ -240,7 +241,7 @@ services:
     volumes:
       - ./kong/kong.yml:/kong/kong.yml:ro
     ports:
-      - "8000:8000"          # gateway path, the E1 treatment
+      - "8000:8000"          # Kong proxy
       - "8001:8001"
     depends_on:
       bridge: {condition: service_healthy}
@@ -250,6 +251,33 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  # Apache APISIX — second independent gateway (Apache 2.0). Standalone YAML
+  # provider, no etcd. Same Keycloak realm and bridge upstream as Kong.
+  # Pin ≥3.12: 3.11 jwt-auth hardcodes payload.key and cannot select the
+  # consumer via Keycloak's iss claim (key_claim_name restored in 3.12).
+  apisix:
+    image: apache/apisix:3.13.0-debian
+    environment:
+      # Entrypoint skips init_etcd; our config.yaml already declares
+      # config_provider: yaml (check_standalone_config.sh only greps).
+      APISIX_STAND_ALONE: "true"
+    volumes:
+      - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - ./apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
+    ports:
+      - "9080:9080"          # APISIX proxy (distinct from Kong :8000)
+    depends_on:
+      bridge: {condition: service_healthy}
+      keycloak: {condition: service_healthy}
+      otel-collector: {condition: service_started}
+    # Image has no curl; probe the admin-less data plane HTTP port.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9080'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
 
   # ─────────────────────────────────────────────────────────────────────────
   # Telemetry
@@ -299,6 +327,11 @@ services:
       DIRECT_URL: http://bridge:8080
       PASSTHROUGH_URL: http://kong:8000/raw
       GATEWAY_URL: http://kong:8000/db
+      KONG_PASSTHROUGH_URL: http://kong:8000/raw
+      KONG_GOVERNED_URL: http://kong:8000/db
+      APISIX_PASSTHROUGH_URL: http://apisix:9080/raw
+      APISIX_GOVERNED_URL: http://apisix:9080/db
       KEYCLOAK_URL: http://keycloak:8080
     depends_on:
       - kong
+      - apisix
