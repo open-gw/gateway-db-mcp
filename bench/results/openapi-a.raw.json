@@ -14,6 +14,10 @@
           "200" : {
             "description" : "List all accessible tables in database: testdb"
           }
+        },
+        "x-mcp-tool" : {
+          "name" : "list_tables",
+          "description" : "List the database tables exposed by this bridge"
         }
       }
     },

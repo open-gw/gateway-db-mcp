@@ -35,8 +35,10 @@ public class GenerateOpenAPIOperation implements DBOperation {
         ObjectNode paths = spec.putObject("paths");
 
         // /tables
-        addGetOp(paths, "/tables", "list_tables",
+        ObjectNode tablesGet = addGetOp(paths, "/tables", "list_tables",
             "List all accessible tables in database: " + cfg.database);
+        addMcpTool(tablesGet, "list_tables",
+            "List the database tables exposed by this bridge");
 
         // /query
         ObjectNode queryPost = paths.putObject("/query").putObject("post");

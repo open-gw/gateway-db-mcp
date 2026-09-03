@@ -9,7 +9,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
-_Changes not yet released appear here._
+### Fixed
+
+- `GET /tables` now emits an `x-mcp-tool` annotation named `list_tables`, matching
+  Table 2 / the manuscript. Prior releases (including the archived `v1.3.0`
+  two-gateway evaluation) generated seven MCP tools and omitted this one; the
+  endpoint itself was always present and exercised. Archives are immutable — the
+  corrected eight-tool manifest appears from this change forward.
 
 ---
 
@@ -65,6 +71,7 @@ _Changes not yet released appear here._
 - Row cap via `security.maxRows` and query abort via `security.queryTimeout`
 - Credential isolation: `poolKey()` excludes password; KVM/Secret Manager injection documented
 
-[Unreleased]: https://github.com/open-gw/gateway-db-mcp/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/open-gw/gateway-db-mcp/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/open-gw/gateway-db-mcp/releases/tag/v1.3.0
 [1.2.0]: https://github.com/open-gw/gateway-db-mcp/releases/tag/v1.2.0
 [1.0.0]: https://github.com/open-gw/gateway-db-mcp/releases/tag/v1.0.0

@@ -194,10 +194,44 @@ class OperationsH2Test {
                 paths.get("/tables").get("get").get("operationId").asText());
         assertEquals("run_query",
                 paths.get("/query").get("post").get("operationId").asText());
+
+        // Every runtime path that Table 2 documents as an MCP tool must carry
+        // x-mcp-tool. GET /openapi is configuration input and must not.
+        assertEquals("list_tables",
+                paths.get("/tables").get("get").get("x-mcp-tool").get("name").asText());
+        assertEquals("run_query",
+                paths.get("/query").get("post").get("x-mcp-tool").get("name").asText());
         assertEquals("get_orders_rows",
                 paths.get("/tables/orders/rows").get("get").get("x-mcp-tool").get("name").asText());
         assertEquals("describe_orders_schema",
                 paths.get("/tables/orders/schema").get("get").get("x-mcp-tool").get("name").asText());
+        assertEquals("get_products_rows",
+                paths.get("/tables/products/rows").get("get").get("x-mcp-tool").get("name").asText());
+        assertEquals("describe_products_schema",
+                paths.get("/tables/products/schema").get("get").get("x-mcp-tool").get("name").asText());
+
+        Set<String> toolNames = new HashSet<>();
+        paths.fields().forEachRemaining(entry -> {
+            entry.getValue().fields().forEachRemaining(method -> {
+                JsonNode tool = method.getValue().get("x-mcp-tool");
+                if (tool != null && tool.has("name")) {
+                    toolNames.add(tool.get("name").asText());
+                    assertTrue(tool.has("description"),
+                            "x-mcp-tool for " + tool.get("name").asText()
+                                    + " must include description");
+                }
+            });
+        });
+        assertEquals(
+                Set.of(
+                        "list_tables",
+                        "run_query",
+                        "get_orders_rows",
+                        "describe_orders_schema",
+                        "get_products_rows",
+                        "describe_products_schema"),
+                toolNames);
+        assertFalse(paths.has("/openapi"));
     }
 
     private static Set<String> toLowerSet(JsonNode array) {

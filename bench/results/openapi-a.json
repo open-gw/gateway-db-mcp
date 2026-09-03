@@ -39,7 +39,11 @@
             "description": "List all accessible tables in database: testdb"
           }
         },
-        "summary": "List all accessible tables in database: testdb"
+        "summary": "List all accessible tables in database: testdb",
+        "x-mcp-tool": {
+          "description": "List the database tables exposed by this bridge",
+          "name": "list_tables"
+        }
       }
     },
     "/tables/customers/rows": {
