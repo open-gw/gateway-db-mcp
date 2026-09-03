@@ -346,8 +346,10 @@ curl -H "Authorization: Bearer $TOKEN" "$BASE/openapi" | python3 -m json.tool > 
 ```
 
 Open `my-db-mcp-spec.json` and verify:
-- `paths` contains one `/tables/X/rows` and one `/tables/X/schema` for each allowed table
-- Each GET operation has an `x-mcp-tool` object with `name` and `description`
+- `paths` contains `/tables` (list_tables), `/query` (run_query), and one
+  `/tables/X/rows` plus `/tables/X/schema` for each allowed table
+- Each of those operations has an `x-mcp-tool` object with `name` and
+  `description` (`GET /openapi` itself is not a tool)
 - `info.title` matches the `api.title` you set in the Property Set
 
 > **Spec updates:** If you change `security.allowedTables` or the database schema changes, re-run this command to get a fresh spec and re-import it into the MCP proxy (Step 7). The bridge always reflects the live schema.
