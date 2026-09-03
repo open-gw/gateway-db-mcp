@@ -99,7 +99,7 @@
 <JavaCallout name="JC-DBBridge">
   <DisplayName>DB MCP Bridge — PostgreSQL</DisplayName>
   <ClassName>io.github.opengw.dbmcp.DBMCPCallout</ClassName>
-  <ResourceURL>java://gateway-db-mcp-1.0.0.jar</ResourceURL>
+  <ResourceURL>java://gateway-db-mcp-1.2.0.jar</ResourceURL>
 
   <Properties>
 

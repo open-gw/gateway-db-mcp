@@ -15,7 +15,7 @@
     <ProxyEndpoint>default</ProxyEndpoint>
   </ProxyEndpoints>
   <Resources>
-    <Resource>java://gateway-db-mcp-1.0.0.jar</Resource>
+    <Resource>java://gateway-db-mcp-1.2.0.jar</Resource>
   </Resources>
   <TargetEndpoints/>
 </APIProxy>

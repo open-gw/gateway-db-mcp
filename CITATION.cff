@@ -28,8 +28,8 @@ authors:
     email: hello@open-gw.com
     orcid: https://orcid.org/0009-0007-9082-8846
     affiliation: Independent Researcher, Alpharetta, GA, USA
-version: v1.0.2
-date-released: '2026-08-31'
+version: v1.2.0
+date-released: '2026-09-03'
 doi: 10.5281/zenodo.20174425
 license: Apache-2.0
 repository-code: https://github.com/open-gw/gateway-db-mcp
