@@ -306,7 +306,7 @@ The `JC-DBBridge.xml` policy is the only file you need to edit. It accepts `{pro
 ```xml
 <JavaCallout name="JC-DBBridge">
   <ClassName>io.github.opengw.dbmcp.DBMCPCallout</ClassName>
-  <ResourceURL>java://gateway-db-mcp-1.0.0.jar</ResourceURL>
+  <ResourceURL>java://gateway-db-mcp-1.2.0.jar</ResourceURL>
   <Properties>
     <Property name="db.type">{propertyset.db-config.type}</Property>
     <Property name="db.host">{propertyset.db-config.host}</Property>

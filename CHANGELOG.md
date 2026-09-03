@@ -13,6 +13,29 @@ _Changes not yet released appear here._
 
 ---
 
+## [1.2.0] — 2026-09-03
+
+### Added
+
+- Optional Maven profiles `-Pmariadb` and `-Poracle` for drivers that are not bundled by default
+- MariaDB support (`db.type=mariadb`, `jdbc:mariadb://`, Apigee example, bench E4 third engine)
+- Root `LICENSING.md` recording third-party licence posture (not legal advice)
+- `NOTICE` embedded in the shaded JAR for Apache 2.0 §4(d) binary disclosure
+- Clear startup failure when an optional JDBC driver is absent from the classpath
+- `db.sslMode` / `DB_SSL_MODE` override for MySQL and MariaDB TLS mode
+
+### Changed
+
+- MySQL JDBC URL defaults to `sslMode=VERIFY_IDENTITY`; MariaDB to `sslMode=verify-full`
+- Generated Apigee callout JAR is no longer tracked in git; `mvn package` is required before Apigee deploy
+- `CONTRIBUTING.md` distinguishes copyleft-with-exception (bundleable) from LGPL without equivalent permission
+
+### Security
+
+- Stated default of certificate + hostname verification for MySQL/MariaDB connections; see `SECURITY.md`
+
+---
+
 ## [1.0.0] — 2026-05-12
 
 ### Added
@@ -42,5 +65,6 @@ _Changes not yet released appear here._
 - Row cap via `security.maxRows` and query abort via `security.queryTimeout`
 - Credential isolation: `poolKey()` excludes password; KVM/Secret Manager injection documented
 
-[Unreleased]: https://github.com/open-gw/gateway-db-mcp/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/open-gw/gateway-db-mcp/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/open-gw/gateway-db-mcp/releases/tag/v1.2.0
 [1.0.0]: https://github.com/open-gw/gateway-db-mcp/releases/tag/v1.0.0
