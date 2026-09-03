@@ -53,10 +53,18 @@ AI Agent (Claude / custom)
         │  JDBC over TCP (Cloud SQL Private IP
         │  or external DB with VPC peering)
         ▼
-  MySQL / PostgreSQL / MSSQL
+  MySQL / MariaDB / PostgreSQL / MSSQL
 ```
 
 The bridge proxy has `RouteRule = NoRoute` — the Java Callout writes the HTTP response directly into the Apigee message context without forwarding to any upstream target. No backend service is deployed.
+
+Per-engine examples:
+
+| Engine | Example |
+|---|---|
+| MySQL | [`examples/mysql/`](examples/mysql/) |
+| MariaDB | [`examples/mariadb/`](examples/mariadb/) — build with `mvn clean package -Pmariadb` |
+| PostgreSQL | [`examples/postgres/`](examples/postgres/) |
 
 ---
 

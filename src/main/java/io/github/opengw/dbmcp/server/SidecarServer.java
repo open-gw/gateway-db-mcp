@@ -7,6 +7,8 @@ import com.sun.net.httpserver.HttpServer;
 import io.github.opengw.dbmcp.CalloutConfig;
 import io.github.opengw.dbmcp.ConnectionPoolManager;
 import io.github.opengw.dbmcp.DBOperation;
+import io.github.opengw.dbmcp.JdbcDriverSupport;
+import io.github.opengw.dbmcp.MissingJdbcDriverException;
 import io.github.opengw.dbmcp.OperationNotFoundException;
 import io.github.opengw.dbmcp.OperationResult;
 import io.github.opengw.dbmcp.OperationRouter;
@@ -97,6 +99,17 @@ public final class SidecarServer {
         int maxAttempts = parsePositiveInt(envOr("STARTUP_MAX_ATTEMPTS", "30"), 30, "STARTUP_MAX_ATTEMPTS");
         int retryMs = parsePositiveInt(envOr("STARTUP_RETRY_INTERVAL_MS", "1000"), 1000, "STARTUP_RETRY_INTERVAL_MS");
 
+        // Fail fast on optional-profile drivers before requiring connection env vars,
+        // so `DB_TYPE=mariadb java -jar …` names -Pmariadb without a config noise floor.
+        try {
+            String earlyType = envOr("DB_TYPE", "mysql").trim().toLowerCase();
+            JdbcDriverSupport.requireOnClasspath(earlyType, CalloutConfig.driverClassNameFor(earlyType));
+        } catch (MissingJdbcDriverException e) {
+            System.err.println(e.getMessage());
+            System.exit(1);
+            return;
+        }
+
         CalloutConfig config;
         try {
             requireEnv("DB_HOST");
@@ -127,6 +140,12 @@ public final class SidecarServer {
                     server.attachDataSource(ConnectionPoolManager.getPool(config));
                     LOGGER.info("[gateway-db-mcp] Database pool ready on attempt "
                             + attempt + "/" + maxAttempts);
+                    return;
+                } catch (MissingJdbcDriverException e) {
+                    // Optional-profile driver missing — do not retry; message names the fix.
+                    System.err.println(e.getMessage());
+                    ConnectionPoolManager.shutdown();
+                    System.exit(1);
                     return;
                 } catch (Exception e) {
                     LOGGER.info("[gateway-db-mcp] Pool init attempt " + attempt + "/"

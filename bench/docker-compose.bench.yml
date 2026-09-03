@@ -11,8 +11,8 @@
 #   docker compose -f docker-compose.bench.yml --profile bench run --rm k6 run /scripts/latency.js
 #
 # Default services = E1 latency set. Profile `extra` = mysql-b, bridge-b, postgres,
-# bridge-pg (E3/E4 only). Do not run E1 while `extra` is up — those containers
-# contend for the same Docker VM CPUs and confound the gateway-cost delta.
+# bridge-pg, mariadb, bridge-mariadb (E3/E4 only). Do not run E1 while `extra` is up —
+# those containers contend for the same Docker VM CPUs and confound the gateway-cost delta.
 #
 # Run from the bench/ directory. Build context is the repository root.
 
@@ -28,6 +28,12 @@ x-bridge-env: &bridge-env
 x-bridge-build: &bridge-build
   context: ..
   dockerfile: sidecar/Dockerfile
+
+x-bridge-build-mariadb: &bridge-build-mariadb
+  context: ..
+  dockerfile: sidecar/Dockerfile
+  args:
+    MAVEN_PROFILES: mariadb
 
 services:
 
@@ -71,6 +77,27 @@ services:
       retries: 30
       start_period: 20s
 
+  # MariaDB reuses MySQL schema.sql + data-a.sql. SELECT-only user is created in
+  # init-mariadb-user.sql (same Layer 1 pattern as mysql-a / postgres).
+  mariadb:
+    image: mariadb:11.4
+    profiles: ["extra"]
+    environment:
+      MARIADB_ROOT_PASSWORD: rootpassword
+      MARIADB_DATABASE: testdb
+    volumes:
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./db/data-a.sql:/docker-entrypoint-initdb.d/02-data.sql:ro
+      - ./db/init-mariadb-user.sql:/docker-entrypoint-initdb.d/03-user.sql:ro
+    healthcheck:
+      # Prefer root TCP ping over healthcheck.sh: the image's healthcheck user is
+      # not created when only MARIADB_ROOT_PASSWORD / MARIADB_DATABASE are set.
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -P 3306 --protocol=TCP -uroot -prootpassword --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
   # POSTGRES_USER is the superuser (postgres), not the app credential. readonly_user
   # is created SELECT-only in init-postgres.sql (mirrors MySQL Layer 1).
   postgres:
@@ -104,6 +131,8 @@ services:
       DB_DATABASE: testdb
       DB_USERNAME: readonly_user
       DB_PASSWORD: readonlypassword
+      # Lab containers lack a trusted CA; production default is VERIFY_IDENTITY.
+      DB_SSL_MODE: PREFERRED
     ports:
       - "8080:8080"          # direct path, the E1 baseline
     depends_on:
@@ -127,6 +156,7 @@ services:
       DB_DATABASE: testdb
       DB_USERNAME: readonly_user
       DB_PASSWORD: readonlypassword
+      DB_SSL_MODE: PREFERRED
     ports:
       - "8082:8080"
     depends_on:
@@ -147,6 +177,30 @@ services:
       - "8083:8080"
     depends_on:
       postgres: {condition: service_healthy}
+
+  bridge-mariadb:
+    build: *bridge-build-mariadb
+    profiles: ["extra"]
+    environment:
+      <<: *bridge-env
+      DB_TYPE: mariadb
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      DB_DATABASE: testdb
+      DB_USERNAME: readonly_user
+      DB_PASSWORD: readonlypassword
+      # Lab containers lack a trusted CA; production default is verify-full.
+      DB_SSL_MODE: trust
+    ports:
+      - "8084:8080"
+    depends_on:
+      mariadb: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 15s
 
   # ─────────────────────────────────────────────────────────────────────────
   # Gateway policy chain

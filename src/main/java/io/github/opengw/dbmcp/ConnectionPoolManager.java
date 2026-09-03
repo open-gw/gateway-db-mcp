@@ -43,6 +43,8 @@ public class ConnectionPoolManager {
     private static HikariDataSource createPool(CalloutConfig c) {
         LOGGER.info("[gateway-db-mcp] Creating pool — " + c.poolKey());
 
+        JdbcDriverSupport.requireOnClasspath(c.dbType, c.driverClassName());
+
         HikariConfig hk = new HikariConfig();
         hk.setJdbcUrl(c.jdbcUrl());
         hk.setDriverClassName(c.driverClassName());
@@ -56,7 +58,8 @@ public class ConnectionPoolManager {
         hk.setConnectionTestQuery("SELECT 1");
         hk.setPoolName("gw-dbmcp-" + c.dbType + "-" + c.database);
 
-        if ("mysql".equals(c.dbType)) {
+        // MySQL Connector/J and MariaDB Connector/J share these Hikari data-source hints.
+        if ("mysql".equals(c.dbType) || "mariadb".equals(c.dbType)) {
             hk.addDataSourceProperty("cachePrepStmts",          "true");
             hk.addDataSourceProperty("prepStmtCacheSize",        "250");
             hk.addDataSourceProperty("prepStmtCacheSqlLimit",    "2048");
@@ -65,7 +68,8 @@ public class ConnectionPoolManager {
         }
 
         HikariDataSource ds = new HikariDataSource(hk);
-        LOGGER.info("[gateway-db-mcp] Pool ready — " + c.poolKey());
+        LOGGER.info("[gateway-db-mcp] Pool ready — " + c.poolKey()
+                + " driver=" + c.driverClassName());
         return ds;
     }
 }

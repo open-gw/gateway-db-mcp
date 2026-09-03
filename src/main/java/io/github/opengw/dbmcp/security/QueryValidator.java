@@ -12,8 +12,12 @@ import java.util.regex.Pattern;
  *
  * <p>Known bypass vectors (mitigated by Layer 1):
  * <ul>
- *   <li>MySQL conditional comments: {@literal /*!50000 SELECT *}{@literal /} — not stripped
- *       by standard block comment removal</li>
+ *   <li>MySQL / MariaDB executable comments: {@literal /*!50000 SELECT *}{@literal /}
+ *       — not stripped by standard block-comment removal. Both engines execute
+ *       MySQL-style {@literal /*! … *}{@literal /} comments (MariaDB additionally
+ *       supports {@literal /*M! … *}{@literal /}). Versioned
+ *       {@literal /*!50000 … *}{@literal /} still executes on MariaDB (versions
+ *       below 50700 are not in MariaDB's ignore range).</li>
  *   <li>Unicode normalization on keyword spelling</li>
  *   <li>Database-specific syntax not in denylist (HANDLER, COPY TO, OPENROWSET)</li>
  * </ul>

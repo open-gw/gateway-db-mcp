@@ -9,10 +9,22 @@ request you agree that your contribution is licensed under the same terms
 (inbound = outbound).
 
 If your change adds a third-party dependency, state its licence in the pull
-request description. Dependencies under copyleft licences (GPL, LGPL, AGPL,
-SSPL) cannot be bundled into the shaded artifact and will need to be declared
-`provided` scope with a documented non-bundled installation path, in the same
-way the Oracle JDBC driver is handled.
+request description and update [`LICENSING.md`](LICENSING.md).
+
+Not all copyleft licences are treated alike. A dependency may be bundled in the
+default shaded artifact when its licence (including any exception attached to
+it) permits redistribution inside a combined Apache-2.0 work without imposing
+conditions on the recipient beyond attribution and notice — MySQL Connector/J
+under GPLv2 with the Universal FOSS Exception is the existing example. See
+`LICENSING.md` for the full posture.
+
+A dependency whose licence does not clearly permit that arrangement, or whose
+compatibility with shading is unsettled (for example LGPL-2.1 without an
+equivalent exception), must not be bundled by default. Declare it `provided`
+scope, expose it through an optional Maven profile (see `-Pmariadb` /
+`-Poracle` in `pom.xml`), and document the build step for operators. Do not
+treat the Oracle JDBC profile as the only template: MariaDB uses the same
+mechanism for a different licence reason.
 
 ## How to contribute
 

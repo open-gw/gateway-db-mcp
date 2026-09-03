@@ -39,8 +39,36 @@ class CalloutConfigTest {
     @Test void mysql_jdbc_url() {
         CalloutConfig cfg = CalloutConfig.from(base());
         assertTrue(cfg.jdbcUrl().startsWith("jdbc:mysql://"),  "MySQL URL prefix");
-        assertTrue(cfg.jdbcUrl().contains("useSSL=true"),       "MySQL requires SSL");
+        assertTrue(cfg.jdbcUrl().contains("sslMode=VERIFY_IDENTITY"),
+                "MySQL defaults to certificate + hostname verification");
+        assertFalse(cfg.jdbcUrl().contains("useSSL="), "deprecated useSSL must not appear");
         assertEquals("com.mysql.cj.jdbc.Driver", cfg.driverClassName());
+    }
+
+    @Test void mariadb_jdbc_url() {
+        Map<String, String> p = base();
+        p.put("db.type", "mariadb");
+        p.remove("db.port");
+        CalloutConfig cfg = CalloutConfig.from(p);
+        assertEquals(3306, cfg.port);
+        assertTrue(cfg.jdbcUrl().startsWith("jdbc:mariadb://"), "MariaDB URL prefix");
+        assertTrue(cfg.jdbcUrl().contains("sslMode=verify-full"),
+                "MariaDB defaults to verify-full");
+        assertFalse(cfg.jdbcUrl().contains("useSSL="), "deprecated useSSL must not appear");
+        assertEquals("org.mariadb.jdbc.Driver", cfg.driverClassName());
+    }
+
+    @Test void ssl_mode_override_applied() {
+        Map<String, String> p = base();
+        p.put("db.sslMode", "PREFERRED");
+        CalloutConfig cfg = CalloutConfig.from(p);
+        assertEquals("PREFERRED", cfg.sslMode);
+        assertTrue(cfg.jdbcUrl().contains("sslMode=PREFERRED"));
+
+        p.put("db.type", "mariadb");
+        p.put("db.sslMode", "trust");
+        cfg = CalloutConfig.from(p);
+        assertTrue(cfg.jdbcUrl().contains("sslMode=trust"));
     }
 
     @Test void postgres_jdbc_url() {

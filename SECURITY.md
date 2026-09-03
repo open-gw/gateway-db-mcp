@@ -49,14 +49,27 @@ Understanding the security architecture helps scope valid reports:
 - Path traversal or injection through table/column identifier validation
 - Connection pool isolation failures in multi-tenant Apigee environments
 - Docker image vulnerabilities in base image or bundled dependencies
+- Weakening or bypass of the default JDBC TLS verification posture (see below)
 
 **Out of scope (known limitations, documented):**
-- MySQL conditional comments (`/*!50000 SELECT */`) bypassing the regex validator — documented; mitigated by Layer 1 (read-only DB user)
+- MySQL / MariaDB executable comments (`/*!50000 SELECT */`, and MariaDB-only `/*M! … */`) bypassing the regex validator — documented; mitigated by Layer 1 (read-only DB user). MariaDB executes MySQL-style `/*! … */` comments; versioned `/*!50000 … */` is still executed (MariaDB only ignores the `50700..99999` range).
 - Unicode normalization bypass of keyword detection — documented
 - Database-specific syntax not in the denylist — documented
-- Full SQL injection prevention without a read-only database user — the validator is explicitly documented as defence-in-depth requiring Layer 1
+- Full SQL injection prevention without a read-only database credential — the validator is explicitly documented as defence-in-depth requiring Layer 1
 
 **Not our responsibility:**
 - Security of the Apigee, Kong, or Azure APIM gateway layer
 - Security of the database server itself
 - Operator failure to provision a read-only database credential (this is documented as mandatory)
+- Operator choice to relax `db.sslMode` / `DB_SSL_MODE` for lab or private-CA environments
+
+### Transport TLS (MySQL / MariaDB)
+
+The generated JDBC URL defaults to certificate and hostname verification:
+
+| Engine | Default `sslMode` |
+|---|---|
+| MySQL | `VERIFY_IDENTITY` |
+| MariaDB | `verify-full` |
+
+That is a deliberate security claim for regulated deployments: the bridge will not silently accept an unverified server certificate. Against a self-signed or private-CA host, connection init fails with a TLS/JDBC error at pool startup. Operators must either place the issuing CA in the trust store or explicitly set `db.sslMode` / `DB_SSL_MODE` (for example MySQL `PREFERRED`, MariaDB `trust`). Relaxing verification is an operator decision and is out of scope for vulnerability reports unless the default itself is changed without disclosure.

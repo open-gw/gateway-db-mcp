@@ -41,7 +41,8 @@
   - Use Private IP (not public IP) for lowest latency and no egress charges.
   - Enable Private IP: Cloud SQL console → your instance → Connections → Private IP.
   - VPC peering between Apigee X and Cloud SQL VPC must be configured.
-  - Set useSSL=true in the JDBC URL (already set below).
+  - JDBC URL uses sslMode=VERIFY_IDENTITY (certificate + hostname verification).
+  - For lab/self-signed hosts, set db.sslMode (e.g. PREFERRED) on the callout.
   - For Cloud SQL Auth Proxy: set db.host=127.0.0.1 and run proxy as sidecar.
 
   MYSQL-SPECIFIC BEHAVIOURS:

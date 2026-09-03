@@ -13,7 +13,8 @@
   <description>
     Config-driven JDBC database bridge for enterprise API gateway MCP proxies.
     Supports Apigee X (embedded Java Callout), Kong Gateway, and Azure APIM.
-    MySQL, PostgreSQL, and MSSQL out of the box.
+    MySQL, PostgreSQL, and MSSQL bundled by default; MariaDB and Oracle via
+    optional Maven profiles (see LICENSING.md).
   </description>
   <url>https://github.com/open-gw/gateway-db-mcp</url>
 
@@ -35,12 +36,22 @@
     <hikari.version>5.0.1</hikari.version>
     <jackson.version>2.15.2</jackson.version>
     <mysql.version>8.0.33</mysql.version>
+    <mariadb.version>3.3.3</mariadb.version>
+    <oracle.version>21.9.0.0</oracle.version>
     <postgres.version>42.6.0</postgres.version>
     <mssql.version>12.4.1.jre11</mssql.version>
     <h2.version>2.2.224</h2.version>
     <junit.version>5.10.0</junit.version>
     <mockito.version>5.4.0</mockito.version>
     <jmh.version>1.37</jmh.version>
+    <!-- Optional MariaDB: provided (compile-only) unless -Pmariadb flips to compile. -->
+    <mariadb.driver.scope>provided</mariadb.driver.scope>
+    <!-- Shade excludes: no-op coordinates when the matching profile is active. -->
+    <shade.exclude.mariadb>org.mariadb.jdbc:mariadb-java-client</shade.exclude.mariadb>
+    <shade.exclude.mariadb.transitives>com.github.waffle:waffle-jna</shade.exclude.mariadb.transitives>
+    <shade.exclude.jna>net.java.dev.jna:jna</shade.exclude.jna>
+    <shade.exclude.jna.platform>net.java.dev.jna:jna-platform</shade.exclude.jna.platform>
+    <shade.exclude.oracle>com.oracle.database.jdbc:ojdbc11</shade.exclude.oracle>
   </properties>
 
   <dependencies>
@@ -63,7 +74,7 @@
       <version>${jackson.version}</version>
     </dependency>
 
-    <!-- ===== JDBC Drivers ===== -->
+    <!-- ===== JDBC Drivers (bundled by default) ===== -->
     <dependency>
       <groupId>com.mysql</groupId>
       <artifactId>mysql-connector-j</artifactId>
@@ -78,6 +89,14 @@
       <groupId>com.microsoft.sqlserver</groupId>
       <artifactId>mssql-jdbc</artifactId>
       <version>${mssql.version}</version>
+    </dependency>
+
+    <!-- ===== Optional JDBC drivers (see profiles; LICENSING.md) ===== -->
+    <dependency>
+      <groupId>org.mariadb.jdbc</groupId>
+      <artifactId>mariadb-java-client</artifactId>
+      <version>${mariadb.version}</version>
+      <scope>${mariadb.driver.scope}</scope>
     </dependency>
 
     <!-- ===== Test ===== -->
@@ -136,6 +155,16 @@
                 </transformer>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
               </transformers>
+              <artifactSet>
+                <excludes>
+                  <!-- Optional drivers and MariaDB transitives; profiles clear these. -->
+                  <exclude>${shade.exclude.mariadb}</exclude>
+                  <exclude>${shade.exclude.mariadb.transitives}</exclude>
+                  <exclude>${shade.exclude.jna}</exclude>
+                  <exclude>${shade.exclude.jna.platform}</exclude>
+                  <exclude>${shade.exclude.oracle}</exclude>
+                </excludes>
+              </artifactSet>
               <filters>
                 <filter>
                   <artifact>*:*</artifact>
@@ -172,6 +201,7 @@
             <goals><goal>run</goal></goals>
             <configuration>
               <target>
+                <mkdir dir="${project.basedir}/apiproxy/resources/java"/>
                 <copy file="${project.build.directory}/${project.artifactId}-${project.version}.jar"
                       todir="${project.basedir}/apiproxy/resources/java"
                       overwrite="true"/>
@@ -203,5 +233,36 @@
 
     </plugins>
   </build>
+
+  <profiles>
+    <!-- LGPL-2.1 MariaDB Connector/J — optional; see LICENSING.md -->
+    <profile>
+      <id>mariadb</id>
+      <properties>
+        <mariadb.driver.scope>compile</mariadb.driver.scope>
+        <!-- Coordinates that match nothing — clears the default shade excludes. -->
+        <shade.exclude.mariadb>__optional__:__not-excluded__</shade.exclude.mariadb>
+        <shade.exclude.mariadb.transitives>__optional__:__not-excluded__</shade.exclude.mariadb.transitives>
+        <shade.exclude.jna>__optional__:__not-excluded__</shade.exclude.jna>
+        <shade.exclude.jna.platform>__optional__:__not-excluded__</shade.exclude.jna.platform>
+      </properties>
+    </profile>
+
+    <!-- Oracle JDBC — operator-supplied / OTN terms; declared only in-profile so
+         the default build does not resolve ojdbc11. -->
+    <profile>
+      <id>oracle</id>
+      <properties>
+        <shade.exclude.oracle>__optional__:__not-excluded__</shade.exclude.oracle>
+      </properties>
+      <dependencies>
+        <dependency>
+          <groupId>com.oracle.database.jdbc</groupId>
+          <artifactId>ojdbc11</artifactId>
+          <version>${oracle.version}</version>
+        </dependency>
+      </dependencies>
+    </profile>
+  </profiles>
 
 </project>

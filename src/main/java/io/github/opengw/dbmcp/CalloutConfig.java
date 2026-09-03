@@ -34,6 +34,8 @@ public final class CalloutConfig {
     public final String  username;
     public final String  password;
     public final String  schema;
+    /** Optional JDBC {@code sslMode} override. Null → engine secure default. */
+    public final String  sslMode;
 
     // ── Pool ──────────────────────────────────────────────────────────────────
     public final int  poolMaxSize;
@@ -60,6 +62,7 @@ public final class CalloutConfig {
         this.username                = b.username;
         this.password                = b.password;
         this.schema                  = b.schema;
+        this.sslMode                 = b.sslMode;
         this.poolMaxSize             = b.poolMaxSize;
         this.poolMinIdle             = b.poolMinIdle;
         this.poolConnectionTimeoutMs = b.poolConnectionTimeoutMs;
@@ -83,6 +86,8 @@ public final class CalloutConfig {
         b.username = require(p, "db.username");
         b.password = require(p, "db.password");
         b.schema   = p.getOrDefault("db.schema", null);
+        String ssl = p.getOrDefault("db.sslMode", null);
+        b.sslMode  = (ssl == null || ssl.isBlank()) ? null : ssl.trim();
 
         b.poolMaxSize             = parseInt(p, "pool.maxSize",            10);
         b.poolMinIdle             = parseInt(p, "pool.minIdle",             2);
@@ -120,6 +125,7 @@ public final class CalloutConfig {
         mapEnv(mapped, "DB_USERNAME",                   "db.username");
         mapEnv(mapped, "DB_PASSWORD",                   "db.password");
         mapEnv(mapped, "DB_SCHEMA",                     "db.schema");
+        mapEnv(mapped, "DB_SSL_MODE",                   "db.sslMode");
         mapEnv(mapped, "POOL_MAX_SIZE",                 "pool.maxSize");
         mapEnv(mapped, "POOL_MIN_IDLE",                 "pool.minIdle");
         mapEnv(mapped, "POOL_CONNECTION_TIMEOUT",       "pool.connectionTimeout");
@@ -149,17 +155,41 @@ public final class CalloutConfig {
                 return String.format(
                     "jdbc:sqlserver://%s:%d;databaseName=%s;encrypt=true;trustServerCertificate=false",
                     host, port, database);
-            default: // mysql
+            case "mariadb":
+                // Connector/J 3.3 default sslMode is disable (plaintext). Pin verify-full
+                // for regulated deployments; operators may override via db.sslMode.
                 return String.format(
-                    "jdbc:mysql://%s:%d/%s?useSSL=true&serverTimezone=UTC&allowPublicKeyRetrieval=false",
-                    host, port, database);
+                    "jdbc:mariadb://%s:%d/%s?sslMode=%s",
+                    host, port, database, effectiveSslMode());
+            default: // mysql
+                // useSSL=true alone does not verify certificates (maps toward PREFERRED).
+                // Pin VERIFY_IDENTITY; override with db.sslMode for lab/self-signed hosts.
+                return String.format(
+                    "jdbc:mysql://%s:%d/%s?sslMode=%s&serverTimezone=UTC&allowPublicKeyRetrieval=false",
+                    host, port, database, effectiveSslMode());
         }
     }
 
+    /**
+     * Resolved {@code sslMode} for MySQL / MariaDB JDBC URLs.
+     * Defaults: MySQL {@code VERIFY_IDENTITY}, MariaDB {@code verify-full}.
+     */
+    public String effectiveSslMode() {
+        if (sslMode != null && !sslMode.isBlank()) return sslMode;
+        return "mariadb".equals(dbType) ? "verify-full" : "VERIFY_IDENTITY";
+    }
+
     public String driverClassName() {
-        switch (dbType) {
+        return driverClassNameFor(dbType);
+    }
+
+    /** Resolves the JDBC driver class for a {@code db.type} without building a full config. */
+    public static String driverClassNameFor(String dbType) {
+        switch (dbType == null ? "" : dbType) {
             case "postgres": return "org.postgresql.Driver";
             case "mssql":    return "com.microsoft.sqlserver.jdbc.SQLServerDriver";
+            case "mariadb":  return "org.mariadb.jdbc.Driver";
+            case "oracle":   return "oracle.jdbc.OracleDriver";
             default:         return "com.mysql.cj.jdbc.Driver";
         }
     }
@@ -178,15 +208,18 @@ public final class CalloutConfig {
     // ── Validation & parsing ──────────────────────────────────────────────────
 
     private static void validate(Builder b) {
-        Set<String> valid = new HashSet<>(Arrays.asList("mysql", "postgres", "mssql"));
+        Set<String> valid = new HashSet<>(Arrays.asList("mysql", "postgres", "mssql", "mariadb"));
         if (!valid.contains(b.dbType))
             throw new IllegalArgumentException(
                 "[gateway-db-mcp] Unsupported db.type '" + b.dbType
-                + "'. Supported: mysql, postgres, mssql");
+                + "'. Supported: mysql, postgres, mssql, mariadb");
         if (b.maxRows < 1 || b.maxRows > 100_000)
             throw new IllegalArgumentException("security.maxRows must be 1–100000, got " + b.maxRows);
         if (b.queryTimeoutSec < 1 || b.queryTimeoutSec > 300)
             throw new IllegalArgumentException("security.queryTimeout must be 1–300, got " + b.queryTimeoutSec);
+        if (b.sslMode != null && !b.sslMode.matches("[A-Za-z0-9_-]+"))
+            throw new IllegalArgumentException(
+                "db.sslMode must be a single token (letters, digits, _ or -), got: " + b.sslMode);
     }
 
     private static String require(Map<String, String> p, String key) {
@@ -226,12 +259,13 @@ public final class CalloutConfig {
         switch (dbType) {
             case "postgres": return 5432;
             case "mssql":    return 1433;
+            case "mariadb":  return 3306;
             default:         return 3306;
         }
     }
 
     private static class Builder {
-        String dbType, host, database, username, password, schema, baseTitle, apiVersion;
+        String dbType, host, database, username, password, schema, sslMode, baseTitle, apiVersion;
         int port, poolMaxSize, poolMinIdle, maxRows, queryTimeoutSec;
         long poolConnectionTimeoutMs, poolIdleTimeoutMs, poolMaxLifetimeMs;
         boolean readOnly;

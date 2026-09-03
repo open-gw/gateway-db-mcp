@@ -12,9 +12,11 @@ benchmark-publication restriction.
 | `mysql-a` | `mysql:8.0` | Primary test database |
 | `mysql-b` | `mysql:8.0` | Identical schema, different rows. E3 only |
 | `postgres` | `postgres:16` | Cross-engine target. E4 only |
+| `mariadb` | `mariadb:11.4` | Cross-engine target. E4 only; schema/data reused from MySQL |
 | `bridge` | built from `sidecar/Dockerfile` | Direct path, `:8080` |
 | `bridge-b` | same | Second instance, `:8082` |
 | `bridge-pg` | same | PostgreSQL instance, `:8083` |
+| `bridge-mariadb` | same Dockerfile with `-Pmariadb` | MariaDB instance, `:8084` |
 | `keycloak` | `quay.io/keycloak/keycloak:26.0` | OAuth 2.1 authorization server, RS256 |
 | `kong` | `kong:3.12` (OSS) | Gateway path, `:8000`. `jwt` + `rate-limiting` + `opentelemetry` |
 | `otel-collector` | `otel/opentelemetry-collector-contrib` | Spans to Jaeger and to `results/spans.jsonl` |
@@ -59,8 +61,9 @@ docker compose -f docker-compose.bench.yml up -d --build
 docker compose -f docker-compose.bench.yml ps        # wait for healthy
 ```
 
-`mysql-b`, `bridge-b`, `postgres`, and `bridge-pg` live under Compose profile
-`extra`. They start only when E3/E4 bring them up. Running E1 while they are up
+`mysql-b`, `bridge-b`, `postgres`, `bridge-pg`, `mariadb`, and `bridge-mariadb`
+live under Compose profile `extra`. They start only when E3/E4 bring them up.
+Running E1 while they are up
 is refused by `run-benchmark.sh` unless `--allow-extra-containers` is passed —
 those JVMs and databases contend for the same Docker VM CPUs as the bridge,
 Kong, and k6, and that contention is a plausible alternative explanation for
@@ -205,9 +208,11 @@ returning to E1.
 ./scripts/e4-crossdb.sh
 ```
 
-Brings up profile `extra` itself. Same config against MySQL and PostgreSQL.
-Type-mapping differences are expected; report them rather than suppressing them.
-Stop `extra` before returning to E1.
+Brings up profile `extra` itself. Same config against MySQL, PostgreSQL, and
+MariaDB. Asserts the resolved JDBC driver class for each engine so a MySQL
+fallback cannot silently pass as MariaDB support. Type-mapping differences are
+expected; report them rather than suppressing them. Stop `extra` before
+returning to E1.
 
 ### Security-layer verification
 

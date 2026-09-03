@@ -10,7 +10,7 @@
 **Config-driven JDBC database bridge for enterprise API gateway MCP proxies — Apigee X, Kong, Azure APIM. Zero custom code.**
 
 ```
-AI Agent  →MCP→  [Apigee X / Kong / Azure APIM]  →HTTP→  [gateway-db-mcp]  →JDBC→  MySQL / PostgreSQL / MSSQL
+AI Agent  →MCP→  [Apigee X / Kong / Azure APIM]  →HTTP→  [gateway-db-mcp]  →JDBC→  MySQL / MariaDB / PostgreSQL / MSSQL
 ```
 
 ---
@@ -164,15 +164,18 @@ All properties are set in `JC-DBBridge.xml` `<Properties>` (embedded mode) or en
 
 | Property | Env Var | Required | Default | Description |
 |---|---|---|---|---|
-| `db.type` | `DB_TYPE` | No | `mysql` | `mysql` \| `postgres` \| `mssql` |
+| `db.type` | `DB_TYPE` | No | `mysql` | `mysql` \| `mariadb` \| `postgres` \| `mssql` |
 | `db.host` | `DB_HOST` | **Yes** | — | Hostname or IP |
 | `db.port` | `DB_PORT` | No | type-specific | Override default port |
 | `db.database` | `DB_DATABASE` | **Yes** | — | Database / catalog name |
 | `db.username` | `DB_USERNAME` | **Yes** | — | Database user |
 | `db.password` | `DB_PASSWORD` | **Yes** | — | Use KVM ref in Apigee; env var in sidecar |
 | `db.schema` | `DB_SCHEMA` | No | — | Schema filter (PostgreSQL / MSSQL) |
+| `db.sslMode` | `DB_SSL_MODE` | No | engine default | MySQL: `VERIFY_IDENTITY`; MariaDB: `verify-full`. Override for lab/self-signed (e.g. MySQL `PREFERRED`, MariaDB `trust`). Not applied to PostgreSQL / MSSQL URLs. |
 
 > **Security note:** Never commit passwords to the proxy bundle. In Apigee X, use a KVM reference: `{private.db.password}`. In sidecar mode, use a Kubernetes Secret, AWS Secrets Manager, or Azure Key Vault.
+
+> **TLS handshake failures:** MySQL and MariaDB default to certificate + hostname verification. Against a self-signed or private-CA server the pool fails at startup with a JDBC/TLS error (not a config-parse error). That usually means the trust store is missing the CA, or you need an intentional lab override via `db.sslMode` / `DB_SSL_MODE` — not that the bridge binary is broken.
 
 ### Connection pool (HikariCP)
 
@@ -260,11 +263,16 @@ OWASP regression suite defeat it. They are checked into the repository as expect
 
 | Category | Count | Example |
 |---|---|---|
-| MySQL conditional comments | 2 | `/*!50000 SELECT */` |
+| MySQL / MariaDB executable comments | 2 | `/*!50000 SELECT */` (also `/*M! … */` on MariaDB) |
 | Inline-comment keyword split | 1 | `SEL/**/ECT` |
 | Percent-encoded keyword decoded upstream of the bridge | 1 | `%53ELECT` |
 | Vendor-specific `HANDLER` statement | 1 | `HANDLER tbl OPEN` |
 | MySQL file-read function | 1 | `LOAD_FILE()` |
+
+MariaDB accepts MySQL-style executable comments (`/*! … */`). The documented
+`/*!50000 … */` bypass therefore applies to MariaDB as well (MariaDB only ignores
+versioned MySQL comments in the `50700..99999` range). MariaDB also supports
+`/*M! … */`, which the heuristic does not special-case either.
 
 This is a regression suite against one published payload set. It is **not** a penetration test and
 makes no claim of completeness against SQL injection in general. Database-specific syntax outside
@@ -280,11 +288,12 @@ policy is planned for v2.0 (see [Roadmap](#roadmap)).
 
 | Database | JDBC Driver | Default Port | Notes |
 |---|---|---|---|
-| MySQL 8.x | `com.mysql.cj.jdbc.Driver` | 3306 | SSL enabled by default |
-| PostgreSQL 14+ | `org.postgresql.Driver` | 5432 | |
-| SQL Server 2019+ | `com.microsoft.sqlserver.jdbc.SQLServerDriver` | 1433 | TLS required |
+| MySQL 8.x | `com.mysql.cj.jdbc.Driver` | 3306 | Bundled; JDBC URL uses `sslMode=VERIFY_IDENTITY` |
+| MariaDB 10.6+ | `org.mariadb.jdbc.Driver` | 3306 | Optional — build with `-Pmariadb` (LGPL-2.1; see [LICENSING.md](LICENSING.md)); JDBC URL uses `sslMode=verify-full` |
+| PostgreSQL 14+ | `org.postgresql.Driver` | 5432 | Bundled |
+| SQL Server 2019+ | `com.microsoft.sqlserver.jdbc.SQLServerDriver` | 1433 | Bundled; TLS required |
 
-Adding a new database requires one line in `pom.xml` (JDBC driver dependency) and one `case` in `CalloutConfig.driverClassName()` and `jdbcUrl()`. Oracle, DB2, and MariaDB support is straightforward; Oracle's OJDBC JAR has license restrictions preventing bundling — install instructions are in the [Contributing guide](CONTRIBUTING.md).
+Adding a new database requires a JDBC driver dependency (bundled or optional profile — see [LICENSING.md](LICENSING.md)) and `case` arms in `CalloutConfig.driverClassName()` / `jdbcUrl()`. Oracle's OJDBC JAR is not bundled by default — install instructions are under [Building](#building).
 
 ---
 
@@ -422,7 +431,7 @@ Set on every response and available to downstream policies:
 | v2.0 | Column-level access control for PHI exclusion | 📋 Planned |
 | v2.1 | Google Secret Manager native credential resolution | 📋 Planned |
 | v2.2 | Schema change webhook → auto `/openapi` refresh | 📋 Planned |
-| v3.0 | Oracle, DB2, and MariaDB driver bundles | 📋 Planned |
+| v3.0 | Oracle and DB2 driver bundles | 📋 Planned |
 
 ---
 
@@ -430,9 +439,10 @@ Set on every response and available to downstream policies:
 
 ```
 gateway-db-mcp/
-├── pom.xml                          Maven: shaded JAR, HikariCP, 3 JDBC drivers
+├── pom.xml                          Maven: shaded JAR, HikariCP, bundled JDBC drivers
 ├── README.md
 ├── CONTRIBUTING.md
+├── LICENSING.md                     Third-party licence posture (not legal advice)
 ├── LICENSE                          Apache 2.0
 │
 ├── src/main/java/io/github/opengw/dbmcp/
@@ -480,17 +490,20 @@ cd gateway-db-mcp
 # Build (produces shaded JAR + copies to apiproxy/resources/java/)
 mvn clean package
 
+# Include MariaDB Connector/J (LGPL-2.1) in the shaded JAR
+mvn clean package -Pmariadb
+
 # Run tests (H2 in-memory, no live DB required)
 mvn test
 
-# Build Docker sidecar image
-docker build -t gateway-db-mcp:local ./sidecar/
+# Build Docker sidecar image (from repository root)
+docker build -f sidecar/Dockerfile -t gateway-db-mcp:local .
 ```
 
-**Adding Oracle support** (licence-restricted JAR, not bundled):
+**Adding Oracle support** (licence-restricted JAR, not bundled by default):
 
 ```bash
-# Install ojdbc11 to local Maven repo
+# Install ojdbc11 to local Maven repo (if not resolving from Maven Central)
 mvn install:install-file \
   -Dfile=/path/to/ojdbc11.jar \
   -DgroupId=com.oracle.database.jdbc \
@@ -498,10 +511,12 @@ mvn install:install-file \
   -Dversion=21.9.0.0 \
   -Dpackaging=jar
 
-# Uncomment Oracle section in pom.xml, then rebuild
+# Package with the Oracle driver shaded in
 mvn clean package -Poracle
 ```
 
+Licence posture for bundled vs optional drivers is recorded in
+[LICENSING.md](LICENSING.md).
 ---
 
 ## Relation to standalone DB MCP servers
@@ -518,7 +533,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Priority areas:
 
 - Apache Calcite AST validator (`/dev/calcite-validator` branch)
 - Column-level ACL configuration model
-- Oracle / DB2 / MariaDB driver installation guides
+- Oracle / DB2 driver installation guides
 - Additional gateway integration guides (AWS API Gateway, Nginx)
 - Performance benchmarks against PostgREST / Hasura baselines
 

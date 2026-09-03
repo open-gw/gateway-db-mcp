@@ -22,7 +22,7 @@ RESET_TELEMETRY=0
 RESET_TELEMETRY_ONCE=0
 
 LATENCY_SERVICES=(mysql-a bridge keycloak kong otel-collector jaeger)
-EXTRA_SERVICES=(mysql-b bridge-b postgres bridge-pg)
+EXTRA_SERVICES=(mysql-b bridge-b postgres bridge-pg mariadb bridge-mariadb)
 
 usage() {
   cat <<'EOF'
