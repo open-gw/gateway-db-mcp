@@ -61,8 +61,8 @@ Exception, version 1.0.
 
 The exception is **narrower than it is often assumed to be**. Reading the text
 at <http://oss.oracle.com/licenses/universal-foss-exception>, it grants
-permission concerning *Interfaces* — constants, function signatures, data
-structures and other invocation methods — so that software under an OSI-approved
+permission concerning *Interfaces*, meaning constants, function signatures, data
+structures and other invocation methods, so that software under an OSI-approved
 or FSF-free licence ("Other FOSS") can interoperate with the GPL'd software
 without the Other FOSS being forced under the GPL. It states that this includes
 statically or dynamically linking the Software together with Other FOSS.
@@ -143,11 +143,21 @@ The rule this project applies:
 
 Under that rule:
 
-- Apache-2.0, BSD, MIT dependencies: bundled.
-- MySQL Connector/J: bundled, on the basis of the Universal FOSS Exception,
-  with its GPLv2 status disclosed in `NOTICE`. **[DECISION REQUIRED — see §7]**
-- MariaDB Connector/J: optional profile.
-- Oracle JDBC: optional profile, operator-supplied.
+- **Apache-2.0, BSD and MIT dependencies: bundled.** Attribution and notice are
+  satisfied through `NOTICE`.
+- **MySQL Connector/J: bundled.** The Universal FOSS Exception is drafted for
+  precisely this case, Apache-2.0 qualifies as Other FOSS, and Connector/J's
+  GPLv2 status is disclosed in `NOTICE`. Its bytecode is unmodified and
+  unrelocated, and Oracle publishes corresponding source.
+- **MariaDB Connector/J: optional profile** (`-Pmariadb`). LGPL-2.1 carries no
+  equivalent permission, and §4.2 declines to resolve whether shading satisfies
+  its relinking conditions.
+- **Oracle JDBC: optional profile** (`-Poracle`), operator-supplied.
+
+The distinction between MySQL and MariaDB rests on the presence of an express
+permission in one case and its absence in the other. It is not a judgement about
+copyleft as a category, and it is not a judgement about the merits of either
+driver.
 
 ## 6. Obligations this creates
 
@@ -160,30 +170,31 @@ Under that rule:
 3. **Re-verification on dependency upgrade.** Licences change between versions.
    A dependency bump is a licence review.
 
-## 7. Open decisions
+## 7. Decisions
 
-**D1. Whether MySQL Connector/J should remain bundled.**
+**D1. MySQL Connector/J bundling — decided.**
 
-Arguments for: the Universal FOSS Exception exists precisely to permit this,
-Apache 2.0 qualifies as Other FOSS, and MySQL is the primary demonstration
-database. Removing it degrades the default experience substantially.
+MySQL Connector/J remains bundled in the default build.
 
-Arguments against: it places GPLv2 bytecode inside an artifact most users will
-assume is uniformly Apache 2.0, and the rule in §5 is cleaner if applied
-uniformly to all copyleft.
+The Universal FOSS Exception explicitly contemplates distribution alongside
+OSI-approved software, and moving the project's primary demonstration database
+behind an optional profile would degrade the default experience in order to
+resolve a question the exception already addresses.
 
-A third option is to bundle nothing and make every driver a profile, which is
-the most defensible position and the least convenient one.
+MariaDB Connector/J is treated differently because LGPL-2.1 carries no equivalent
+permission, not because copyleft is disfavoured as a category.
 
-**This decision has not been made.** Until it is, §5 records current practice
-rather than a settled policy.
+This decision is recorded rather than assumed, and should be revisited if the
+exception's terms change, if the project's distribution channels impose stricter
+requirements, or if a review under D2 concludes otherwise.
 
-**D2. Whether to seek a professional review.**
+**D2. Whether to seek a professional review — open.**
 
 The project is publicly archived with a DOI and is cited in academic work, so
-the accuracy of these statements has consequences beyond the repository. A
-review by someone qualified would be proportionate, particularly on §4.1 and
-§4.2.
+the accuracy of these statements has consequences beyond the repository. A review
+by someone qualified would be proportionate, particularly on §4.1 and §4.2.
+
+This has not been done. The analysis here should be read accordingly.
 
 ## 8. Uncertainty register
 
