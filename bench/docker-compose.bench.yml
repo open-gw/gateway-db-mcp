@@ -131,6 +131,8 @@ services:
       DB_DATABASE: testdb
       DB_USERNAME: readonly_user
       DB_PASSWORD: readonlypassword
+      # Lab containers lack a trusted CA; production default is VERIFY_IDENTITY.
+      DB_SSL_MODE: PREFERRED
     ports:
       - "8080:8080"          # direct path, the E1 baseline
     depends_on:
@@ -154,6 +156,7 @@ services:
       DB_DATABASE: testdb
       DB_USERNAME: readonly_user
       DB_PASSWORD: readonlypassword
+      DB_SSL_MODE: PREFERRED
     ports:
       - "8082:8080"
     depends_on:
@@ -186,6 +189,8 @@ services:
       DB_DATABASE: testdb
       DB_USERNAME: readonly_user
       DB_PASSWORD: readonlypassword
+      # Lab containers lack a trusted CA; production default is verify-full.
+      DB_SSL_MODE: trust
     ports:
       - "8084:8080"
     depends_on:

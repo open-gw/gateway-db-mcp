@@ -53,9 +53,9 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 | Behaviour | Detail |
 |---|---|
-| JDBC URL | `jdbc:mariadb://host:3306/database?sslMode=trust` |
+| JDBC URL | `jdbc:mariadb://host:3306/database?sslMode=verify-full` |
 | Driver | `org.mariadb.jdbc.Driver` |
-| SSL | `sslMode` (Connector/J 3.x); `trust` encrypts without verifying the server certificate |
+| SSL | `sslMode=verify-full` by default (certificate + hostname verification). For lab/self-signed hosts set `db.sslMode=trust` / `DB_SSL_MODE=trust`. |
 | Default port | 3306 |
 | Build | `mvn clean package -Pmariadb` (see [LICENSING.md](../../../LICENSING.md)) |
 | `db.schema` | Not required — MariaDB uses `db.database` as the catalog scope |

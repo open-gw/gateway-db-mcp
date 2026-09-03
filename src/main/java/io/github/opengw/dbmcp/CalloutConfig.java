@@ -34,6 +34,8 @@ public final class CalloutConfig {
     public final String  username;
     public final String  password;
     public final String  schema;
+    /** Optional JDBC {@code sslMode} override. Null → engine secure default. */
+    public final String  sslMode;
 
     // ── Pool ──────────────────────────────────────────────────────────────────
     public final int  poolMaxSize;
@@ -60,6 +62,7 @@ public final class CalloutConfig {
         this.username                = b.username;
         this.password                = b.password;
         this.schema                  = b.schema;
+        this.sslMode                 = b.sslMode;
         this.poolMaxSize             = b.poolMaxSize;
         this.poolMinIdle             = b.poolMinIdle;
         this.poolConnectionTimeoutMs = b.poolConnectionTimeoutMs;
@@ -83,6 +86,8 @@ public final class CalloutConfig {
         b.username = require(p, "db.username");
         b.password = require(p, "db.password");
         b.schema   = p.getOrDefault("db.schema", null);
+        String ssl = p.getOrDefault("db.sslMode", null);
+        b.sslMode  = (ssl == null || ssl.isBlank()) ? null : ssl.trim();
 
         b.poolMaxSize             = parseInt(p, "pool.maxSize",            10);
         b.poolMinIdle             = parseInt(p, "pool.minIdle",             2);
@@ -120,6 +125,7 @@ public final class CalloutConfig {
         mapEnv(mapped, "DB_USERNAME",                   "db.username");
         mapEnv(mapped, "DB_PASSWORD",                   "db.password");
         mapEnv(mapped, "DB_SCHEMA",                     "db.schema");
+        mapEnv(mapped, "DB_SSL_MODE",                   "db.sslMode");
         mapEnv(mapped, "POOL_MAX_SIZE",                 "pool.maxSize");
         mapEnv(mapped, "POOL_MIN_IDLE",                 "pool.minIdle");
         mapEnv(mapped, "POOL_CONNECTION_TIMEOUT",       "pool.connectionTimeout");
@@ -150,15 +156,27 @@ public final class CalloutConfig {
                     "jdbc:sqlserver://%s:%d;databaseName=%s;encrypt=true;trustServerCertificate=false",
                     host, port, database);
             case "mariadb":
-                // Connector/J 3.x: sslMode replaces deprecated useSSL.
-                // trust = encrypt without verifying the server certificate (docker / self-signed).
+                // Connector/J 3.3 default sslMode is disable (plaintext). Pin verify-full
+                // for regulated deployments; operators may override via db.sslMode.
                 return String.format(
-                    "jdbc:mariadb://%s:%d/%s?sslMode=trust", host, port, database);
+                    "jdbc:mariadb://%s:%d/%s?sslMode=%s",
+                    host, port, database, effectiveSslMode());
             default: // mysql
+                // useSSL=true alone does not verify certificates (maps toward PREFERRED).
+                // Pin VERIFY_IDENTITY; override with db.sslMode for lab/self-signed hosts.
                 return String.format(
-                    "jdbc:mysql://%s:%d/%s?useSSL=true&serverTimezone=UTC&allowPublicKeyRetrieval=false",
-                    host, port, database);
+                    "jdbc:mysql://%s:%d/%s?sslMode=%s&serverTimezone=UTC&allowPublicKeyRetrieval=false",
+                    host, port, database, effectiveSslMode());
         }
+    }
+
+    /**
+     * Resolved {@code sslMode} for MySQL / MariaDB JDBC URLs.
+     * Defaults: MySQL {@code VERIFY_IDENTITY}, MariaDB {@code verify-full}.
+     */
+    public String effectiveSslMode() {
+        if (sslMode != null && !sslMode.isBlank()) return sslMode;
+        return "mariadb".equals(dbType) ? "verify-full" : "VERIFY_IDENTITY";
     }
 
     public String driverClassName() {
@@ -199,6 +217,9 @@ public final class CalloutConfig {
             throw new IllegalArgumentException("security.maxRows must be 1–100000, got " + b.maxRows);
         if (b.queryTimeoutSec < 1 || b.queryTimeoutSec > 300)
             throw new IllegalArgumentException("security.queryTimeout must be 1–300, got " + b.queryTimeoutSec);
+        if (b.sslMode != null && !b.sslMode.matches("[A-Za-z0-9_-]+"))
+            throw new IllegalArgumentException(
+                "db.sslMode must be a single token (letters, digits, _ or -), got: " + b.sslMode);
     }
 
     private static String require(Map<String, String> p, String key) {
@@ -244,7 +265,7 @@ public final class CalloutConfig {
     }
 
     private static class Builder {
-        String dbType, host, database, username, password, schema, baseTitle, apiVersion;
+        String dbType, host, database, username, password, schema, sslMode, baseTitle, apiVersion;
         int port, poolMaxSize, poolMinIdle, maxRows, queryTimeoutSec;
         long poolConnectionTimeoutMs, poolIdleTimeoutMs, poolMaxLifetimeMs;
         boolean readOnly;

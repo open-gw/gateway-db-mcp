@@ -171,6 +171,7 @@ All properties are set in `JC-DBBridge.xml` `<Properties>` (embedded mode) or en
 | `db.username` | `DB_USERNAME` | **Yes** | — | Database user |
 | `db.password` | `DB_PASSWORD` | **Yes** | — | Use KVM ref in Apigee; env var in sidecar |
 | `db.schema` | `DB_SCHEMA` | No | — | Schema filter (PostgreSQL / MSSQL) |
+| `db.sslMode` | `DB_SSL_MODE` | No | engine default | MySQL: `VERIFY_IDENTITY`; MariaDB: `verify-full`. Override for lab/self-signed (e.g. MySQL `PREFERRED`, MariaDB `trust`). Not applied to PostgreSQL / MSSQL URLs. |
 
 > **Security note:** Never commit passwords to the proxy bundle. In Apigee X, use a KVM reference: `{private.db.password}`. In sidecar mode, use a Kubernetes Secret, AWS Secrets Manager, or Azure Key Vault.
 
@@ -285,8 +286,8 @@ policy is planned for v2.0 (see [Roadmap](#roadmap)).
 
 | Database | JDBC Driver | Default Port | Notes |
 |---|---|---|---|
-| MySQL 8.x | `com.mysql.cj.jdbc.Driver` | 3306 | Bundled; SSL enabled by default |
-| MariaDB 10.6+ | `org.mariadb.jdbc.Driver` | 3306 | Optional — build with `-Pmariadb` (LGPL-2.1; see [LICENSING.md](LICENSING.md)) |
+| MySQL 8.x | `com.mysql.cj.jdbc.Driver` | 3306 | Bundled; JDBC URL uses `sslMode=VERIFY_IDENTITY` |
+| MariaDB 10.6+ | `org.mariadb.jdbc.Driver` | 3306 | Optional — build with `-Pmariadb` (LGPL-2.1; see [LICENSING.md](LICENSING.md)); JDBC URL uses `sslMode=verify-full` |
 | PostgreSQL 14+ | `org.postgresql.Driver` | 5432 | Bundled |
 | SQL Server 2019+ | `com.microsoft.sqlserver.jdbc.SQLServerDriver` | 1433 | Bundled; TLS required |
 

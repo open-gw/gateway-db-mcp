@@ -62,7 +62,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 | Behaviour | Detail |
 |---|---|
-| SSL | Enabled by default (`useSSL=true` in JDBC URL) |
+| SSL | JDBC URL uses `sslMode=VERIFY_IDENTITY` (certificate + hostname verification). For lab/self-signed hosts set `db.sslMode=PREFERRED` / `DB_SSL_MODE=PREFERRED`. |
 | TINYINT(1) | Maps to `integer` (0/1) — not `boolean`. MySQL convention. |
 | JSON columns | Maps to `string` — JSON structure not reflected in schema |
 | DATETIME | Maps to `string/date-time` — timezone-naive |
