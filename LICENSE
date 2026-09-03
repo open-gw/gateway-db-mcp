@@ -1,201 +1,204 @@
-                                 Apache License
-                           Version 2.0, January 2004
-                        http://www.apache.org/licenses/
+# Licensing
 
-   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+**This document records the project's reasoning about third-party licences. It
+is not legal advice. It is written by the maintainer, not by counsel, and where
+a question is genuinely unresolved it says so rather than asserting an answer.**
 
-   1. Definitions.
+Downstream consumers with specific compliance obligations should form their own
+view and are encouraged to open an issue if they believe anything here is wrong.
 
-      "License" shall mean the terms and conditions for use, reproduction,
-      and distribution as defined by Sections 1 through 9 of this document.
+---
 
-      "Licensor" shall mean the copyright owner or entity authorized by
-      the copyright owner that is granting the License.
+## 1. Project licence
 
-      "Legal Entity" shall mean the union of the acting entity and all
-      other entities that control, are controlled by, or are under common
-      control with that entity. For the purposes of this definition,
-      "control" means (i) the power, direct or indirect, to cause the
-      direction or management of such entity, whether by contract or
-      otherwise, or (ii) ownership of fifty percent (50%) or more of the
-      outstanding shares, or (iii) beneficial ownership of such entity.
+GatewayDB-MCP source code is licensed under the Apache License, Version 2.0. See
+`LICENSE`.
 
-      "You" (or "Your") shall mean an individual or Legal Entity
-      exercising permissions granted by this License.
+Contributions are accepted inbound under the same terms. See `CONTRIBUTING.md`.
 
-      "Source" form shall mean the preferred form for making modifications,
-      including but not limited to software source code, documentation
-      source, and configuration files.
+## 2. What the distributed artifact contains
 
-      "Object" form shall mean any form resulting from mechanical
-      transformation or translation of a Source form, including but
-      not limited to compiled object code, generated documentation,
-      and conversions to other media types.
+The project publishes a shaded uber-JAR built with `maven-shade-plugin`. That
+artifact contains this project's code **and** the bytecode of its dependencies.
+The dependencies retain their own licences; shading does not relicense them.
 
-      "Work" shall mean the work of authorship, whether in Source or
-      Object form, made available under the License, as indicated by a
-      copyright notice that is included in or attached to the work
-      (an example is provided in the Appendix below).
+This distinction matters and has not previously been stated clearly. "This
+project is licensed under Apache 2.0" is a statement about this project's
+source. It is not a statement about every class inside the shaded JAR.
 
-      "Derivative Works" shall mean any work, whether in Source or Object
-      form, that is based on (or derived from) the Work and for which the
-      editorial revisions, annotations, elaborations, or other modifications
-      represent, as a whole, an original work of authorship. For the purposes
-      of this License, Derivative Works shall not include works that remain
-      separable from, or merely link (or bind by name) to the interfaces of,
-      the Work and Derivative Works thereof.
+Relocation: HikariCP and Jackson are relocated under
+`io.github.opengw.dbmcp.shaded.*`. **JDBC drivers are not relocated**; their
+bytecode is included unmodified under its original package names.
 
-      "Contribution" shall mean any work of authorship, including
-      the original version of the Work and any modifications or additions
-      to that Work or Derivative Works thereof, that is intentionally
-      submitted to Licensor for inclusion in the Work by the copyright owner
-      or by an individual or Legal Entity authorized to submit on behalf of
-      the copyright owner. For the purposes of this definition, "submitted"
-      means any form of electronic, verbal, or written communication sent
-      to the Licensor or its representatives, including but not limited to
-      communication on electronic mailing lists, source code control systems,
-      and issue tracking systems that are managed by, or on behalf of, the
-      Licensor for the purpose of discussing and improving the Work, but
-      excluding communication that is conspicuously marked or otherwise
-      designated in writing by the copyright owner as "Not a Contribution."
+## 3. Dependency inventory
 
-      "Contributor" shall mean Licensor and any individual or Legal Entity
-      on behalf of whom a Contribution has been received by Licensor and
-      subsequently incorporated within the Work.
+### Runtime, bundled in the default build
 
-   2. Grant of Copyright License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      copyright license to reproduce, prepare Derivative Works of,
-      publicly display, publicly perform, sublicense, and distribute the
-      Work and such Derivative Works in Source or Object form.
+| Dependency | Version | Licence | Source of determination |
+|---|---|---|---|
+| HikariCP | 5.x | Apache-2.0 | artifact POM |
+| Jackson | 2.15 | Apache-2.0 | artifact POM |
+| PostgreSQL JDBC | 42.6.0 | BSD-2-Clause | artifact POM |
+| Microsoft JDBC (SQL Server) | 12.4.1.jre11 | MIT | artifact POM |
+| MySQL Connector/J | 8.0.33 | GPL-2.0 with the Universal FOSS Exception v1.0 | artifact POM and upstream `LICENSE` |
 
-   3. Grant of Patent License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      (except as stated in this section) patent license to make, have made,
-      use, offer to sell, sell, import, and otherwise transfer the Work,
-      where such license applies only to those patent claims licensable
-      by such Contributor that are necessarily infringed by their
-      Contribution(s) alone or by combination of their Contribution(s)
-      with the Work to which such Contribution(s) was submitted. If You
-      institute patent litigation against any entity (including a
-      cross-claim or counterclaim in a lawsuit) alleging that the Work
-      or a Contribution incorporated within the Work constitutes direct
-      or contributory patent infringement, then any patent licenses
-      granted to You under this License for that Work shall terminate
-      as of the date such litigation is filed.
+### Optional, not bundled by default
 
-   4. Redistribution. You may reproduce and distribute copies of the
-      Work or Derivative Works thereof in any medium, with or without
-      modifications, and in Source or Object form, provided that You
-      meet the following conditions:
+| Dependency | Version | Licence | Build profile |
+|---|---|---|---|
+| MariaDB Connector/J | 3.3.3 | LGPL-2.1 | `-Pmariadb` |
+| Oracle JDBC (`ojdbc11`) | operator-supplied | Oracle proprietary terms | `-Poracle` |
 
-      (a) You must give any other recipients of the Work or
-          Derivative Works a copy of this License; and
+MariaDB Connector/J brings `com.github.waffle:waffle-jna` (MIT) transitively,
+which in turn brings `net.java.dev.jna:jna` and `jna-platform` 5.13.0.
 
-      (b) You must cause any modified files to carry prominent notices
-          stating that You changed the files; and
+## 4. Analysis
 
-      (c) You must retain, in the Source form of any Derivative Works
-          that You distribute, all copyright, patent, trademark, and
-          attribution notices from the Source form of the Work,
-          excluding those notices that do not pertain to any part of
-          the Derivative Works; and
+### 4.1 MySQL Connector/J and the Universal FOSS Exception
 
-      (d) If the Work includes a "NOTICE" text file as part of its
-          distribution, then any Derivative Works that You distribute must
-          include a readable copy of the attribution notices contained
-          within such NOTICE file, excluding those notices that do not
-          pertain to any part of the Derivative Works, in at least one
-          of the following places: within a NOTICE text file distributed
-          as part of the Derivative Works; within the Source form or
-          documentation, if provided along with the Derivative Works; or,
-          within a display generated by the Derivative Works, if and
-          wherever such third-party notices normally appear. The contents
-          of the NOTICE file are for informational purposes only and
-          do not modify the License. You may add Your own attribution
-          notices within Derivative Works that You distribute, alongside
-          or as an addendum to the NOTICE text from the Work, provided
-          that such additional attribution notices cannot be construed
-          as modifying the License.
+MySQL Connector/J 8.0.33 is licensed under GPLv2 with the Universal FOSS
+Exception, version 1.0.
 
-      You may add Your own copyright statement to Your modifications and
-      may provide additional or different license terms and conditions
-      for use, reproduction, or distribution of Your modifications, or
-      for any such Derivative Works as a whole, provided Your use,
-      reproduction, and distribution of the Work otherwise complies with
-      the conditions stated in this License.
+The exception is **narrower than it is often assumed to be**. Reading the text
+at <http://oss.oracle.com/licenses/universal-foss-exception>, it grants
+permission concerning *Interfaces* — constants, function signatures, data
+structures and other invocation methods — so that software under an OSI-approved
+or FSF-free licence ("Other FOSS") can interoperate with the GPL'd software
+without the Other FOSS being forced under the GPL. It states that this includes
+statically or dynamically linking the Software together with Other FOSS.
 
-   5. Submission of Contributions. Unless You explicitly state otherwise,
-      any Contribution intentionally submitted for inclusion in the Work
-      by You to the Licensor shall be under the terms and conditions of
-      this License, without any additional terms or conditions.
-      Notwithstanding the above, nothing herein shall supersede or modify
-      the terms of any separate license agreement you may have executed
-      with Licensor regarding such Contributions.
+It also states explicitly that nothing in the permission grants any right to
+distribute any portion of the Software on terms other than the Software Licence.
 
-   6. Trademarks. This License does not grant permission to use the trade
-      names, trademarks, service marks, or product names of the Licensor,
-      except as required for reasonable and customary use in describing the
-      origin of the Work and reproducing the content of the NOTICE file.
+Two consequences for this project:
 
-   7. Disclaimer of Warranty. Unless required by applicable law or
-      agreed to in writing, Licensor provides the Work (and each
-      Contributor provides its Contributions) on an "AS IS" BASIS,
-      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-      implied, including, without limitation, any warranties or conditions
-      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
-      PARTICULAR PURPOSE. You are solely responsible for determining the
-      appropriateness of using or redistributing the Work and assume any
-      risks associated with Your exercise of permissions under this License.
+1. **This project's own code remains Apache 2.0** notwithstanding that it links
+   against and ships alongside Connector/J. That is what the exception is for,
+   and Apache 2.0 is OSI-approved, so it qualifies as Other FOSS.
+2. **Connector/J's bytecode inside the shaded JAR remains under GPLv2 with the
+   exception.** It does not become Apache 2.0. The shaded artifact is therefore
+   a combination of differently licensed components.
 
-   8. Limitation of Liability. In no event and under no legal theory,
-      whether in tort (including negligence), contract, or otherwise,
-      unless required by applicable law (such as deliberate and grossly
-      negligent acts) or agreed to in writing, shall any Contributor be
-      liable to You for damages, including any direct, indirect, special,
-      incidental, or consequential damages of any character arising as a
-      result of this License or out of the use or inability to use the
-      Work (including but not limited to damages for loss of goodwill,
-      work stoppage, computer failure or malfunction, or any and all
-      other commercial damages or losses), even if such Contributor
-      has been advised of the possibility of such damages.
+The obligation that follows is disclosure, not removal: recipients must be told
+what is inside the artifact and under what terms, and the GPL's source
+availability requirement applies to the Connector/J portion. Oracle publishes
+that source.
 
-   9. Accepting Warranty or Additional Liability. While redistributing
-      the Work or Derivative Works thereof, You may choose to offer,
-      and charge a fee for, acceptance of support, warranty, indemnity,
-      or other liability obligations and/or rights consistent with this
-      License. However, in accepting such obligations, You may act only
-      on Your own behalf and on Your sole responsibility, not on behalf
-      of any other Contributor, and only if You agree to indemnify,
-      defend, and hold each Contributor harmless for any liability
-      incurred by, or claims asserted against, such Contributor by reason
-      of your accepting any such warranty or additional liability.
+### 4.2 MariaDB Connector/J and LGPL-2.1
 
-   END OF TERMS AND CONDITIONS
+MariaDB Connector/J 3.3.3 is licensed under LGPL-2.1. There is no equivalent of
+Oracle's Universal FOSS Exception.
 
-   APPENDIX: How to apply the Apache License to your work.
+LGPL-2.1 §6 permits combining the library with a work under other terms, subject
+to conditions intended to preserve the recipient's ability to modify the library
+and relink. Section 6(a) contemplates supplying the complete corresponding
+source for the library together with whatever is needed to relink; §6(b)
+contemplates a shared-library mechanism.
 
-      To apply the Apache License to your work, attach the following
-      boilerplate notice, with the fields enclosed by brackets "[]"
-      replaced with your own identifying information. (Don't include
-      the brackets!)  The text should be enclosed in the appropriate
-      comment syntax for the file format. We also recommend that a
-      file or class name and description of purpose be included on the
-      same "printed page" as the copyright notice for easier
-      identification within third-party archives.
+Whether a shaded uber-JAR satisfies those conditions is **genuinely unsettled**,
+and this project does not attempt to resolve it. Two observations bear on it:
 
-   Copyright [yyyy] [name of copyright owner]
+- The driver's bytecode is **not relocated or modified** by the shade plugin. It
+  is co-located in a single archive under its original package names. That is
+  closer to aggregation than to the kind of modification LGPL's relinking
+  provision is principally aimed at.
+- Nevertheless, a recipient wishing to substitute a different version of the
+  driver cannot simply replace a JAR on the classpath, because the classes are
+  inside the project's own artifact. That is the practical difficulty.
 
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
+Rather than take a position on an unsettled question in a project that other
+people build on, MariaDB support is provided through an optional build profile.
+The default artifact contains no LGPL code, and operators who need MariaDB
+build with `-Pmariadb` and are the party making the distribution decision.
 
-       http://www.apache.org/licenses/LICENSE-2.0
+### 4.3 JNA dual licence
 
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
+`net.java.dev.jna:jna` and `jna-platform` 5.13.0 are dual-licensed:
+LGPL-2.1-or-later **or** Apache-2.0, at the recipient's election.
+
+A dual licence is only resolved when the recipient chooses. **This project elects
+Apache-2.0** for both artifacts. This election is recorded here so that
+downstream consumers can see it rather than having to infer it.
+
+JNA reaches this project only transitively through MariaDB Connector/J, so it is
+absent from the default build.
+
+### 4.4 Oracle JDBC
+
+`ojdbc11` is distributed under Oracle's own terms, not an OSI-approved licence.
+It is never bundled. Operators install it into their local repository and build
+with `-Poracle`, accepting Oracle's terms directly.
+
+## 5. Posture
+
+The rule this project applies:
+
+> A dependency is bundled in the default artifact when its licence permits
+> redistribution inside a combined work without imposing conditions on the
+> recipient beyond attribution and notice. A dependency whose licence imposes
+> conditions on the recipient's ability to modify or replace it, or whose
+> compatibility with distribution inside a shaded archive is unsettled, is
+> provided through an optional build profile instead, so that the operator makes
+> the distribution decision.
+
+Under that rule:
+
+- Apache-2.0, BSD, MIT dependencies: bundled.
+- MySQL Connector/J: bundled, on the basis of the Universal FOSS Exception,
+  with its GPLv2 status disclosed in `NOTICE`. **[DECISION REQUIRED — see §7]**
+- MariaDB Connector/J: optional profile.
+- Oracle JDBC: optional profile, operator-supplied.
+
+## 6. Obligations this creates
+
+1. **A `NOTICE` file** listing every bundled dependency, its licence, and where
+   its source can be obtained. Apache 2.0 §4(d) requires propagating notices;
+   GPLv2 requires source availability for the Connector/J portion.
+2. **Accurate description of the artifact.** The README and release notes should
+   not describe the shaded JAR as simply "Apache 2.0" without qualification. The
+   project's source is Apache 2.0; the artifact is a combination.
+3. **Re-verification on dependency upgrade.** Licences change between versions.
+   A dependency bump is a licence review.
+
+## 7. Open decisions
+
+**D1. Whether MySQL Connector/J should remain bundled.**
+
+Arguments for: the Universal FOSS Exception exists precisely to permit this,
+Apache 2.0 qualifies as Other FOSS, and MySQL is the primary demonstration
+database. Removing it degrades the default experience substantially.
+
+Arguments against: it places GPLv2 bytecode inside an artifact most users will
+assume is uniformly Apache 2.0, and the rule in §5 is cleaner if applied
+uniformly to all copyleft.
+
+A third option is to bundle nothing and make every driver a profile, which is
+the most defensible position and the least convenient one.
+
+**This decision has not been made.** Until it is, §5 records current practice
+rather than a settled policy.
+
+**D2. Whether to seek a professional review.**
+
+The project is publicly archived with a DOI and is cited in academic work, so
+the accuracy of these statements has consequences beyond the repository. A
+review by someone qualified would be proportionate, particularly on §4.1 and
+§4.2.
+
+## 8. Uncertainty register
+
+- The MySQL Connector/J POM declares "The GNU General Public License, v2 with
+  Universal FOSS Exception, v1.0". The upstream `LICENSE` file text has been read
+  and is consistent. No professional review has been obtained.
+- MariaDB Connector/J's POM declares `LGPL-2.1`; the upstream README describes
+  it as LGPL-2.1-or-later. The difference may matter and has not been resolved.
+- Whether shading satisfies LGPL-2.1 §6 is unsettled and this project takes no
+  position. The optional-profile arrangement is chosen to avoid needing one.
+- Transitive dependency licences were determined from artifact POMs. POM
+  metadata is occasionally inaccurate or incomplete relative to the actual
+  `LICENSE` file in the artifact.
+
+## 9. Reporting a problem
+
+If you believe any statement here is wrong, please open an issue. Licensing
+errors in a published artifact are worth correcting promptly and publicly.
