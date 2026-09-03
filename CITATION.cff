@@ -10,7 +10,8 @@ abstract: >-
   GatewayDB-MCP is an open-source Java framework that bridges JDBC-compatible
   relational databases to enterprise API gateway MCP proxies through XML
   property configuration alone, without custom application code. Bundled JDBC
-  drivers cover MySQL, PostgreSQL, and SQL Server. The framework uses a
+  drivers cover MySQL, PostgreSQL, and SQL Server; MariaDB is available through
+  an optional Maven profile. The framework uses a
   two-layer architecture in which the gateway layer supplies MCP protocol
   translation, OAuth 2.1, rate limiting, and OpenTelemetry audit using native
   gateway policies, while the bridge layer handles JDBC connectivity, schema

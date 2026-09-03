@@ -50,9 +50,9 @@ class CalloutConfigTest {
         CalloutConfig cfg = CalloutConfig.from(p);
         assertEquals(3306, cfg.port);
         assertTrue(cfg.jdbcUrl().startsWith("jdbc:mariadb://"), "MariaDB URL prefix");
-        assertTrue(cfg.jdbcUrl().contains("useSSL=true"), "MariaDB requires SSL");
+        assertTrue(cfg.jdbcUrl().contains("sslMode=trust"), "MariaDB uses sslMode");
+        assertFalse(cfg.jdbcUrl().contains("useSSL="), "deprecated useSSL must not appear");
         assertEquals("org.mariadb.jdbc.Driver", cfg.driverClassName());
-        assertDoesNotThrow(() -> Class.forName(cfg.driverClassName()));
     }
 
     @Test void postgres_jdbc_url() {

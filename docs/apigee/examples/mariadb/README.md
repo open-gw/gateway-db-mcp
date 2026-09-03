@@ -42,7 +42,8 @@ key: password    value: YOUR_PASSWORD
 **5. Build and test the proxy:**
 
 ```bash
-mvn clean package
+# MariaDB Connector/J is LGPL-2.1 — not in the default shaded JAR.
+mvn clean package -Pmariadb
 TOKEN=$(gcloud auth print-access-token)
 curl -H "Authorization: Bearer $TOKEN" \
   https://YOUR_ORG.apigee.net/db-mcp/tables
@@ -52,10 +53,11 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 | Behaviour | Detail |
 |---|---|
-| JDBC URL | `jdbc:mariadb://host:3306/database?useSSL=true` |
+| JDBC URL | `jdbc:mariadb://host:3306/database?sslMode=trust` |
 | Driver | `org.mariadb.jdbc.Driver` |
-| SSL | Enabled by default with `useSSL=true` |
+| SSL | `sslMode` (Connector/J 3.x); `trust` encrypts without verifying the server certificate |
 | Default port | 3306 |
+| Build | `mvn clean package -Pmariadb` (see [docs/LICENSING.md](../../LICENSING.md)) |
 | `db.schema` | Not required — MariaDB uses `db.database` as the catalog scope |
 
 ## See also

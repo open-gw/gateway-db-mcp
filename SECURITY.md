@@ -51,10 +51,10 @@ Understanding the security architecture helps scope valid reports:
 - Docker image vulnerabilities in base image or bundled dependencies
 
 **Out of scope (known limitations, documented):**
-- MySQL conditional comments (`/*!50000 SELECT */`) bypassing the regex validator — documented; mitigated by Layer 1 (read-only DB user)
+- MySQL / MariaDB executable comments (`/*!50000 SELECT */`, and MariaDB-only `/*M! … */`) bypassing the regex validator — documented; mitigated by Layer 1 (read-only DB user). MariaDB executes MySQL-style `/*! … */` comments; versioned `/*!50000 … */` is still executed (MariaDB only ignores the `50700..99999` range).
 - Unicode normalization bypass of keyword detection — documented
 - Database-specific syntax not in the denylist — documented
-- Full SQL injection prevention without a read-only database user — the validator is explicitly documented as defence-in-depth requiring Layer 1
+- Full SQL injection prevention without a read-only database credential — the validator is explicitly documented as defence-in-depth requiring Layer 1
 
 **Not our responsibility:**
 - Security of the Apigee, Kong, or Azure APIM gateway layer

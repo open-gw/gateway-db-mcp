@@ -1,3 +1,18 @@
+FROM maven:3.9.9-eclipse-temurin-11 AS build
+WORKDIR /build
+
+# Optional Maven profiles (e.g. mariadb) — empty for the default bundled drivers.
+ARG MAVEN_PROFILES=
+
+COPY pom.xml .
+COPY src ./src
+RUN mkdir -p apiproxy/resources/java \
+ && if [ -n "$MAVEN_PROFILES" ]; then \
+      mvn -B -q clean package -DskipTests -P"$MAVEN_PROFILES"; \
+    else \
+      mvn -B -q clean package -DskipTests; \
+    fi
+
 FROM eclipse-temurin:11-jre-jammy
 
 LABEL org.opencontainers.image.title="gateway-db-mcp"
@@ -11,7 +26,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY target/gateway-db-mcp-*.jar app.jar
+COPY --from=build /build/target/gateway-db-mcp-*.jar app.jar
 
 # Debian-family user creation. addgroup -S / adduser -S is BusyBox syntax and
 # fails here.

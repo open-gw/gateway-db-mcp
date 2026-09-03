@@ -150,8 +150,10 @@ public final class CalloutConfig {
                     "jdbc:sqlserver://%s:%d;databaseName=%s;encrypt=true;trustServerCertificate=false",
                     host, port, database);
             case "mariadb":
+                // Connector/J 3.x: sslMode replaces deprecated useSSL.
+                // trust = encrypt without verifying the server certificate (docker / self-signed).
                 return String.format(
-                    "jdbc:mariadb://%s:%d/%s?useSSL=true", host, port, database);
+                    "jdbc:mariadb://%s:%d/%s?sslMode=trust", host, port, database);
             default: // mysql
                 return String.format(
                     "jdbc:mysql://%s:%d/%s?useSSL=true&serverTimezone=UTC&allowPublicKeyRetrieval=false",
@@ -160,10 +162,16 @@ public final class CalloutConfig {
     }
 
     public String driverClassName() {
-        switch (dbType) {
+        return driverClassNameFor(dbType);
+    }
+
+    /** Resolves the JDBC driver class for a {@code db.type} without building a full config. */
+    public static String driverClassNameFor(String dbType) {
+        switch (dbType == null ? "" : dbType) {
             case "postgres": return "org.postgresql.Driver";
             case "mssql":    return "com.microsoft.sqlserver.jdbc.SQLServerDriver";
             case "mariadb":  return "org.mariadb.jdbc.Driver";
+            case "oracle":   return "oracle.jdbc.OracleDriver";
             default:         return "com.mysql.cj.jdbc.Driver";
         }
     }
