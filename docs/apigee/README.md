@@ -131,6 +131,11 @@ curl -H "Authorization: Bearer $(gcloud auth print-access-token)" \
 
 ## Step 2 — Build the JAR
 
+**Required before deployment.** The shaded callout JAR is not committed to the
+repository. `mvn package` builds it and copies it into
+`apiproxy/resources/java/` for the proxy bundle. Every other deployment path
+already requires this step; Apigee embedded mode is the same.
+
 ### 2a. Install Apigee stub JARs (first time only)
 
 ```bash
@@ -150,11 +155,14 @@ jar tf ~/.m2/repository/com/apigee/edge/expressions/1.0.0/expressions-1.0.0.jar
 mvn clean package -DskipTests
 ```
 
-The shaded JAR is automatically copied to `apiproxy/resources/java/gateway-db-mcp-1.0.0.jar`.
+The shaded JAR is written to `target/` and copied to
+`apiproxy/resources/java/gateway-db-mcp-<version>.jar` (version from `pom.xml`).
+For MariaDB, use `mvn clean package -DskipTests -Pmariadb`.
 
 Verify the JAR is a valid ZIP (not a corrupt stub):
 ```bash
-jar tf apiproxy/resources/java/gateway-db-mcp-1.0.0.jar | head -5
+ls apiproxy/resources/java/gateway-db-mcp-*.jar
+jar tf apiproxy/resources/java/gateway-db-mcp-*.jar | head -5
 ```
 
 ---
@@ -530,7 +538,7 @@ Check Apigee analytics for the detailed error. The most common causes:
 Verify the JAR is in the proxy bundle:
 ```bash
 unzip -l gateway-db-mcp-bridge.zip | grep .jar
-# Should show: apiproxy/resources/java/gateway-db-mcp-1.0.0.jar
+# Should show: apiproxy/resources/java/gateway-db-mcp-*.jar
 ```
 
 If missing, run `mvn package` and repackage the bundle.
