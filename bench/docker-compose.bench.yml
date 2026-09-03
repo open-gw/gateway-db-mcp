@@ -90,7 +90,9 @@ services:
       - ./db/data-a.sql:/docker-entrypoint-initdb.d/02-data.sql:ro
       - ./db/init-mariadb-user.sql:/docker-entrypoint-initdb.d/03-user.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "healthcheck.sh --connect --innodb_initialized"]
+      # Prefer root TCP ping over healthcheck.sh: the image's healthcheck user is
+      # not created when only MARIADB_ROOT_PASSWORD / MARIADB_DATABASE are set.
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -P 3306 --protocol=TCP -uroot -prootpassword --silent"]
       interval: 5s
       timeout: 5s
       retries: 30
