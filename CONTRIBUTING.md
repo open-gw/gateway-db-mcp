@@ -9,14 +9,14 @@ request you agree that your contribution is licensed under the same terms
 (inbound = outbound).
 
 If your change adds a third-party dependency, state its licence in the pull
-request description and update [`docs/LICENSING.md`](docs/LICENSING.md).
+request description and update [`LICENSING.md`](LICENSING.md).
 
 Not all copyleft licences are treated alike. A dependency may be bundled in the
 default shaded artifact when its licence (including any exception attached to
 it) permits redistribution inside a combined Apache-2.0 work without imposing
 conditions on the recipient beyond attribution and notice — MySQL Connector/J
 under GPLv2 with the Universal FOSS Exception is the existing example. See
-`docs/LICENSING.md` for the full posture.
+`LICENSING.md` for the full posture.
 
 A dependency whose licence does not clearly permit that arrangement, or whose
 compatibility with shading is unsettled (for example LGPL-2.1 without an

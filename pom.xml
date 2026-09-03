@@ -14,7 +14,7 @@
     Config-driven JDBC database bridge for enterprise API gateway MCP proxies.
     Supports Apigee X (embedded Java Callout), Kong Gateway, and Azure APIM.
     MySQL, PostgreSQL, and MSSQL bundled by default; MariaDB and Oracle via
-    optional Maven profiles (see docs/LICENSING.md).
+    optional Maven profiles (see LICENSING.md).
   </description>
   <url>https://github.com/open-gw/gateway-db-mcp</url>
 
@@ -91,7 +91,7 @@
       <version>${mssql.version}</version>
     </dependency>
 
-    <!-- ===== Optional JDBC drivers (see profiles; docs/LICENSING.md) ===== -->
+    <!-- ===== Optional JDBC drivers (see profiles; LICENSING.md) ===== -->
     <dependency>
       <groupId>org.mariadb.jdbc</groupId>
       <artifactId>mariadb-java-client</artifactId>
@@ -235,7 +235,7 @@
   </build>
 
   <profiles>
-    <!-- LGPL-2.1 MariaDB Connector/J — optional; see docs/LICENSING.md -->
+    <!-- LGPL-2.1 MariaDB Connector/J — optional; see LICENSING.md -->
     <profile>
       <id>mariadb</id>
       <properties>

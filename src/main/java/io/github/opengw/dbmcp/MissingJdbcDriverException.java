@@ -19,7 +19,7 @@ public final class MissingJdbcDriverException extends IllegalStateException {
         switch (dbType == null ? "" : dbType) {
             case "mariadb":
                 how = "Rebuild with Maven profile -Pmariadb "
-                        + "(mvn clean package -Pmariadb). See docs/LICENSING.md.";
+                        + "(mvn clean package -Pmariadb). See LICENSING.md.";
                 break;
             case "oracle":
                 how = "Install ojdbc11 into the local Maven repository, then rebuild "

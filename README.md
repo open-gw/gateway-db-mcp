@@ -286,11 +286,11 @@ policy is planned for v2.0 (see [Roadmap](#roadmap)).
 | Database | JDBC Driver | Default Port | Notes |
 |---|---|---|---|
 | MySQL 8.x | `com.mysql.cj.jdbc.Driver` | 3306 | Bundled; SSL enabled by default |
-| MariaDB 10.6+ | `org.mariadb.jdbc.Driver` | 3306 | Optional — build with `-Pmariadb` (LGPL-2.1; see [docs/LICENSING.md](docs/LICENSING.md)) |
+| MariaDB 10.6+ | `org.mariadb.jdbc.Driver` | 3306 | Optional — build with `-Pmariadb` (LGPL-2.1; see [LICENSING.md](LICENSING.md)) |
 | PostgreSQL 14+ | `org.postgresql.Driver` | 5432 | Bundled |
 | SQL Server 2019+ | `com.microsoft.sqlserver.jdbc.SQLServerDriver` | 1433 | Bundled; TLS required |
 
-Adding a new database requires a JDBC driver dependency (bundled or optional profile — see [docs/LICENSING.md](docs/LICENSING.md)) and `case` arms in `CalloutConfig.driverClassName()` / `jdbcUrl()`. Oracle's OJDBC JAR is not bundled by default — install instructions are under [Building](#building).
+Adding a new database requires a JDBC driver dependency (bundled or optional profile — see [LICENSING.md](LICENSING.md)) and `case` arms in `CalloutConfig.driverClassName()` / `jdbcUrl()`. Oracle's OJDBC JAR is not bundled by default — install instructions are under [Building](#building).
 
 ---
 
@@ -439,7 +439,7 @@ gateway-db-mcp/
 ├── pom.xml                          Maven: shaded JAR, HikariCP, bundled JDBC drivers
 ├── README.md
 ├── CONTRIBUTING.md
-├── docs/LICENSING.md                Third-party licence posture (not legal advice)
+├── LICENSING.md                     Third-party licence posture (not legal advice)
 ├── LICENSE                          Apache 2.0
 │
 ├── src/main/java/io/github/opengw/dbmcp/
@@ -513,7 +513,7 @@ mvn clean package -Poracle
 ```
 
 Licence posture for bundled vs optional drivers is recorded in
-[docs/LICENSING.md](docs/LICENSING.md).
+[LICENSING.md](LICENSING.md).
 ---
 
 ## Relation to standalone DB MCP servers

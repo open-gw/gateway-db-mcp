@@ -57,7 +57,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | Driver | `org.mariadb.jdbc.Driver` |
 | SSL | `sslMode` (Connector/J 3.x); `trust` encrypts without verifying the server certificate |
 | Default port | 3306 |
-| Build | `mvn clean package -Pmariadb` (see [docs/LICENSING.md](../../LICENSING.md)) |
+| Build | `mvn clean package -Pmariadb` (see [LICENSING.md](../../../LICENSING.md)) |
 | `db.schema` | Not required — MariaDB uses `db.database` as the catalog scope |
 
 ## See also
