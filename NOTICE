@@ -1,0 +1,32 @@
+GatewayDB-MCP
+Copyright 2026 Rinu Dhanaraj
+
+This product includes software developed as part of the GatewayDB-MCP project
+(https://github.com/open-gw/gateway-db-mcp), licensed under the Apache License,
+Version 2.0.
+
+The distributed shaded artifact contains third-party components under their own
+licences. See LICENSING.md for the project's analysis.
+
+Bundled in the default build:
+
+  HikariCP (Apache-2.0)            https://github.com/brettwooldridge/HikariCP
+  Jackson (Apache-2.0)             https://github.com/FasterXML/jackson
+  PostgreSQL JDBC (BSD-2-Clause)   https://jdbc.postgresql.org
+  Microsoft JDBC (MIT)             https://github.com/microsoft/mssql-jdbc
+
+  MySQL Connector/J
+    GPL-2.0 with the Universal FOSS Exception, version 1.0
+    https://github.com/mysql/mysql-connector-j
+    Corresponding source: https://dev.mysql.com/downloads/connector/j/
+    This component remains under its own licence. It is not relicensed by
+    inclusion in this artifact.
+
+Included only with -Pmariadb:
+
+  MariaDB Connector/J (LGPL-2.1)   https://github.com/mariadb-corporation/mariadb-connector-j
+    Corresponding source: https://mariadb.com/downloads/connectors/
+  waffle-jna (MIT)
+  JNA, jna-platform
+    Dual-licensed LGPL-2.1-or-later OR Apache-2.0.
+    This project elects Apache-2.0. See LICENSING.md §4.3.
