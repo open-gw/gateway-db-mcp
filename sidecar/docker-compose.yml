@@ -32,6 +32,8 @@ services:
       DB_DATABASE:             testdb
       DB_USERNAME:             readonly_user
       DB_PASSWORD:             readonlypassword
+      # Lab MySQL lacks a trusted CA; production default is VERIFY_IDENTITY.
+      DB_SSL_MODE:             PREFERRED
       SECURITY_READ_ONLY:      "true"
       SECURITY_ALLOWED_TABLES: orders,products,customers
       SECURITY_MAX_ROWS:       "500"
