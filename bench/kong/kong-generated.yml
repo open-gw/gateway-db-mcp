@@ -1,0 +1,92 @@
+_format_version: "3.0"
+services:
+- host: bridge
+  id: e8357b16-5415-5b32-830e-fb22aeb324b7
+  name: test-db-mcp-bridge-testdb
+  path: /
+  plugins: []
+  port: 8080
+  protocol: http
+  routes:
+  - id: 4a449b60-2be5-5d4d-b0e3-1a87137d6c2f
+    methods:
+    - POST
+    name: test-db-mcp-bridge-testdb_run-query
+    paths:
+    - ~/query$
+    plugins: []
+    regex_priority: 200
+    strip_path: false
+    tags: []
+  - id: 9f59bdc4-94e0-59a1-b454-f4f7905960e7
+    methods:
+    - GET
+    name: test-db-mcp-bridge-testdb_list-tables
+    paths:
+    - ~/tables$
+    plugins: []
+    regex_priority: 200
+    strip_path: false
+    tags: []
+  - id: 124403e5-22b4-50cb-9b79-14dbdfeedcbe
+    methods:
+    - GET
+    name: test-db-mcp-bridge-testdb_get-customers-rows
+    paths:
+    - ~/tables/customers/rows$
+    plugins: []
+    regex_priority: 200
+    strip_path: false
+    tags: []
+  - id: fdc2f09d-22f9-5e55-96ab-9fd308e3347e
+    methods:
+    - GET
+    name: test-db-mcp-bridge-testdb_describe-customers-schema
+    paths:
+    - ~/tables/customers/schema$
+    plugins: []
+    regex_priority: 200
+    strip_path: false
+    tags: []
+  - id: d85a5890-1a70-5155-ad03-f96a39e2111e
+    methods:
+    - GET
+    name: test-db-mcp-bridge-testdb_get-orders-rows
+    paths:
+    - ~/tables/orders/rows$
+    plugins: []
+    regex_priority: 200
+    strip_path: false
+    tags: []
+  - id: 4d1149c3-db03-57c5-ba63-e20672097217
+    methods:
+    - GET
+    name: test-db-mcp-bridge-testdb_describe-orders-schema
+    paths:
+    - ~/tables/orders/schema$
+    plugins: []
+    regex_priority: 200
+    strip_path: false
+    tags: []
+  - id: 0c0c56ad-5573-5f5e-a9cf-5470eb3d884a
+    methods:
+    - GET
+    name: test-db-mcp-bridge-testdb_get-products-rows
+    paths:
+    - ~/tables/products/rows$
+    plugins: []
+    regex_priority: 200
+    strip_path: false
+    tags: []
+  - id: 24620fe7-cb49-58a0-a452-900563f686b8
+    methods:
+    - GET
+    name: test-db-mcp-bridge-testdb_describe-products-schema
+    paths:
+    - ~/tables/products/schema$
+    plugins: []
+    regex_priority: 200
+    strip_path: false
+    tags: []
+  tags: []
+upstreams: []

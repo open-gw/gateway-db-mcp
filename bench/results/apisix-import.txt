@@ -1,0 +1,88 @@
+# APISIX OpenAPI import probe
+# Date: 2026-09-04T11:16:49Z
+# OpenAPI source: http://localhost:8080/openapi
+#
+NOTE: injected servers=[{url: http://bridge:8080}] for ADC probe.
+Attempting: docker run api7/adc:latest convert openapi …
+latest: Pulling from api7/adc
+Digest: sha256:3e4c82a80e781da23ce11d70c9df0f972853a19e0ce335f469d259dfc7e23d19
+Status: Image is up to date for api7/adc:latest
+docker.io/api7/adc:latest
+[11:16:52 AM] [ADC] › ▶  start     Convert OpenAPI document "/work/openapi.json"
+[11:16:52 AM] [ADC] › ✔  success   Convert OpenAPI document "/work/openapi.json"
+[11:16:52 AM] [ADC] › ▶  start     Write converted OpenAPI file
+[11:16:52 AM] [ADC] › ✔  success   Converted OpenAPI file to "/work/apisix-out.yaml" successfully
+[11:16:52 AM] [ADC] › ★  star      All is well, see you next time!
+
+FINDING: adc convert openapi exited 0 (with injected servers).
+Review whether output is usable on standalone OSS without ADC sync.
+----- generated (first 80 lines) -----
+services:
+  - description: >-
+      Auto-generated from live DB schema. Import into Apigee X / Kong / Azure
+      APIM MCP proxy configuration. Source:
+      https://github.com/open-gw/gateway-db-mcp
+    name: Test DB MCP Bridge — testdb
+    routes:
+      - description: 'List all accessible tables in database: testdb'
+        methods:
+          - GET
+        name: list_tables
+        uris:
+          - /tables
+      - description: Execute a parameterized SELECT statement
+        methods:
+          - POST
+        name: run_query
+        uris:
+          - /query
+      - description: 'Retrieve rows from table: customers'
+        methods:
+          - GET
+        name: get_customers_rows
+        uris:
+          - /tables/customers/rows
+      - description: 'Describe schema of table: customers'
+        methods:
+          - GET
+        name: describe_customers_schema
+        uris:
+          - /tables/customers/schema
+      - description: 'Retrieve rows from table: orders'
+        methods:
+          - GET
+        name: get_orders_rows
+        uris:
+          - /tables/orders/rows
+      - description: 'Describe schema of table: orders'
+        methods:
+          - GET
+        name: describe_orders_schema
+        uris:
+          - /tables/orders/schema
+      - description: 'Retrieve rows from table: products'
+        methods:
+          - GET
+        name: get_products_rows
+        uris:
+          - /tables/products/rows
+      - description: 'Describe schema of table: products'
+        methods:
+          - GET
+        name: describe_products_schema
+        uris:
+          - /tables/products/schema
+    upstream:
+      nodes:
+        - host: bridge
+          port: 8080
+          weight: 100
+      pass_host: pass
+      scheme: http
+      timeout:
+        connect: 60
+        read: 60
+        send: 60
+
+Even when conversion succeeds, this harness does not auto-load the
+result into OSS standalone APISIX (no ADC controller). Treat as probe.

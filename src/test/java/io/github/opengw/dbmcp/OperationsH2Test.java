@@ -1,5 +1,6 @@
 package io.github.opengw.dbmcp;
 
+import com.apigee.flow.message.MessageContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.opengw.dbmcp.operations.DescribeSchemaOperation;
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -232,6 +234,125 @@ class OperationsH2Test {
                         "describe_products_schema"),
                 toolNames);
         assertFalse(paths.has("/openapi"));
+
+        // servers must always be present and non-empty
+        assertTrue(spec.has("servers") && spec.get("servers").isArray()
+                && spec.get("servers").size() > 0);
+        assertTrue(spec.get("servers").get(0).has("url"));
+        assertFalse(spec.get("servers").get(0).get("url").asText().isBlank());
+
+        // run_query request body must declare sql (required string) and params (array)
+        JsonNode querySchema = paths.get("/query").get("post")
+                .get("requestBody").get("content").get("application/json").get("schema");
+        assertEquals("object", querySchema.get("type").asText());
+        assertTrue(containsText(querySchema.get("required"), "sql"));
+        assertEquals("string", querySchema.get("properties").get("sql").get("type").asText());
+        assertEquals("array", querySchema.get("properties").get("params").get("type").asText());
+        assertTrue(querySchema.get("properties").get("params").has("items"));
+
+        JsonNode queryExample = paths.get("/query").get("post")
+                .get("requestBody").get("content").get("application/json").get("example");
+        assertNotNull(queryExample);
+        assertTrue(queryExample.has("sql"));
+
+        // get_*_rows query params must be typed with descriptions (and bounds on limit/offset)
+        JsonNode rowParams = paths.get("/tables/orders/rows").get("get").get("parameters");
+        assertNotNull(rowParams);
+        assertTrue(rowParams.isArray());
+        JsonNode limit = findParam(rowParams, "limit");
+        JsonNode offset = findParam(rowParams, "offset");
+        assertNotNull(limit);
+        assertNotNull(offset);
+        assertEquals("integer", limit.get("schema").get("type").asText());
+        assertEquals("integer", offset.get("schema").get("type").asText());
+        assertTrue(limit.has("description") && !limit.get("description").asText().isBlank());
+        assertTrue(offset.has("description") && !offset.get("description").asText().isBlank());
+        assertEquals(1, limit.get("schema").get("minimum").asInt());
+        assertEquals(fx.config.maxRows, limit.get("schema").get("maximum").asInt());
+        assertEquals(0, offset.get("schema").get("minimum").asInt());
+    }
+
+    @Test
+    void generate_openapi_servers_from_config_url() throws Exception {
+        Map<String, String> props = new HashMap<>();
+        props.put("db.type", "mysql");
+        props.put("db.host", "localhost");
+        props.put("db.port", "3306");
+        props.put("db.database", fx.catalog);
+        props.put("db.username", "sa");
+        props.put("db.password", "unused");
+        props.put("security.allowedTables", "orders,products");
+        props.put("security.maxRows", "100");
+        props.put("api.serverUrl", "http://bridge:8080");
+        CalloutConfig cfg = CalloutConfig.from(props);
+
+        OperationResult result = new GenerateOpenAPIOperation()
+                .execute(fx.dataSource, H2Fixture.emptyContext(), cfg);
+        JsonNode spec = MAPPER.readTree(result.body());
+        assertEquals("http://bridge:8080",
+                spec.get("servers").get(0).get("url").asText());
+    }
+
+    @Test
+    void generate_openapi_servers_from_proxy_basepath_when_embedded() throws Exception {
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("proxy.basepath", "/db-mcp");
+        MessageContext ctx = new H2Fixture.FakeMessageContext(
+                new H2Fixture.FakeMessage(""), vars);
+
+        // Config without serverUrl → fall through to MessageContext
+        OperationResult result = new GenerateOpenAPIOperation()
+                .execute(fx.dataSource, ctx, fx.config);
+        JsonNode spec = MAPPER.readTree(result.body());
+        assertEquals("/db-mcp", spec.get("servers").get(0).get("url").asText());
+    }
+
+    @Test
+    void generate_openapi_servers_relative_when_uncertain() throws Exception {
+        // fx.config has no serverUrl; empty context; no reliable PORT in unit test
+        // may still see PORT from the environment — assert non-empty either way,
+        // and when neither config nor proxy is set the resolver returns "/" or
+        // http://127.0.0.1:<PORT>.
+        String resolved = GenerateOpenAPIOperation.resolveServerUrl(
+                fx.config, H2Fixture.emptyContext());
+        assertFalse(resolved.isBlank());
+        assertTrue(resolved.equals("/") || resolved.startsWith("http://127.0.0.1:"));
+    }
+
+    @Test
+    void generate_openapi_passes_openapi_3_0_3_validator() throws Exception {
+        OperationResult result = new GenerateOpenAPIOperation()
+                .execute(fx.dataSource, H2Fixture.emptyContext(), fx.config);
+        io.swagger.v3.parser.core.models.SwaggerParseResult parsed =
+                new io.swagger.v3.parser.OpenAPIV3Parser().readContents(result.body(), null, null);
+        assertNotNull(parsed.getOpenAPI(), "parser returned null OpenAPI: " + parsed.getMessages());
+        assertEquals("3.0.3", parsed.getOpenAPI().getOpenapi());
+        // swagger-parser reports warnings as messages; fail on any parse/validation error.
+        java.util.List<String> errors = parsed.getMessages() == null
+                ? java.util.List.of()
+                : parsed.getMessages().stream()
+                        .filter(m -> m != null && !m.isBlank())
+                        .filter(m -> !m.toLowerCase().contains("warning"))
+                        .collect(java.util.stream.Collectors.toList());
+        assertTrue(errors.isEmpty(), "OpenAPI validation errors: " + errors);
+        assertFalse(parsed.getOpenAPI().getServers().isEmpty());
+        assertNotNull(parsed.getOpenAPI().getPaths().get("/query")
+                .getPost().getRequestBody());
+    }
+
+    private static boolean containsText(JsonNode array, String value) {
+        if (array == null || !array.isArray()) return false;
+        for (JsonNode n : array) {
+            if (value.equals(n.asText())) return true;
+        }
+        return false;
+    }
+
+    private static JsonNode findParam(JsonNode params, String name) {
+        for (JsonNode p : params) {
+            if (name.equals(p.path("name").asText())) return p;
+        }
+        return null;
     }
 
     private static Set<String> toLowerSet(JsonNode array) {

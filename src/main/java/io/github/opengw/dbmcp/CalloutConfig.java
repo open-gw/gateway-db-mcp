@@ -53,6 +53,11 @@ public final class CalloutConfig {
     // ── OpenAPI meta ──────────────────────────────────────────────────────────
     public final String baseTitle;
     public final String apiVersion;
+    /**
+     * Optional OpenAPI {@code servers[0].url}. When null/blank the generator
+     * derives a URL from the deployment context, or emits {@code /}.
+     */
+    public final String serverUrl;
 
     private CalloutConfig(Builder b) {
         this.dbType                  = b.dbType;
@@ -74,6 +79,7 @@ public final class CalloutConfig {
         this.queryTimeoutSec         = b.queryTimeoutSec;
         this.baseTitle               = b.baseTitle;
         this.apiVersion              = b.apiVersion;
+        this.serverUrl               = b.serverUrl;
     }
 
     /** Parse the Apigee property map into a validated, typed config. */
@@ -110,6 +116,8 @@ public final class CalloutConfig {
 
         b.baseTitle  = p.getOrDefault("api.title",   "DB MCP Bridge");
         b.apiVersion = p.getOrDefault("api.version", "1.0.0");
+        String serverUrl = p.getOrDefault("api.serverUrl", null);
+        b.serverUrl = (serverUrl == null || serverUrl.isBlank()) ? null : serverUrl.trim();
 
         validate(b);
         return new CalloutConfig(b);
@@ -137,6 +145,9 @@ public final class CalloutConfig {
         mapEnv(mapped, "SECURITY_QUERY_TIMEOUT",        "security.queryTimeout");
         mapEnv(mapped, "API_TITLE",                     "api.title");
         mapEnv(mapped, "API_VERSION",                   "api.version");
+        // Prefer API_SERVER_URL when both aliases are set.
+        mapEnv(mapped, "OPENAPI_SERVER_URL",            "api.serverUrl");
+        mapEnv(mapped, "API_SERVER_URL",                "api.serverUrl");
         return from(mapped);
     }
 
@@ -265,7 +276,8 @@ public final class CalloutConfig {
     }
 
     private static class Builder {
-        String dbType, host, database, username, password, schema, sslMode, baseTitle, apiVersion;
+        String dbType, host, database, username, password, schema, sslMode,
+               baseTitle, apiVersion, serverUrl;
         int port, poolMaxSize, poolMinIdle, maxRows, queryTimeoutSec;
         long poolConnectionTimeoutMs, poolIdleTimeoutMs, poolMaxLifetimeMs;
         boolean readOnly;
