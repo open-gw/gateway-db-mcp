@@ -22,7 +22,7 @@ RESET_TELEMETRY=0
 RESET_TELEMETRY_ONCE=0
 GATEWAY_FILTER="both"
 
-LATENCY_SERVICES=(mysql-a bridge keycloak kong apisix otel-collector jaeger)
+LATENCY_SERVICES=(mysql-a bridge keycloak kong apisix otel-collector jaeger mcp-server)
 EXTRA_SERVICES=(mysql-b bridge-b postgres bridge-pg mariadb bridge-mariadb)
 
 usage() {
@@ -39,15 +39,18 @@ Targets (canonical):
   direct
   kong-passthrough, kong-governed
   apisix-passthrough, apisix-governed
+  rest-python
+  mcp-direct, mcp-governed
 
 Deprecated aliases (normalized before run):
   passthrough → kong-passthrough
   gateway     → kong-governed
 
 --gateway filters which arms a --sweep includes (default: both):
-  both   — all five targets (direct + kong-* + apisix-*)
+  both   — all five REST targets (direct + kong-* + apisix-*)
   kong   — direct, kong-passthrough, kong-governed
   apisix — direct, apisix-passthrough, apisix-governed
+MCP / rest-python targets are not part of --sweep; run them with --target explicitly.
 Single --target runs ignore --gateway (except known-target validation).
 
 A full sweep (--gateway both, VU 1/10/50, --repeats 3) is 45 runs, roughly 90 minutes.
@@ -117,30 +120,52 @@ canonicalize_target() {
   case "$1" in
     passthrough) printf '%s\n' "kong-passthrough" ;;
     gateway) printf '%s\n' "kong-governed" ;;
-    direct|kong-passthrough|kong-governed|apisix-passthrough|apisix-governed) printf '%s\n' "$1" ;;
+    direct|kong-passthrough|kong-governed|apisix-passthrough|apisix-governed|rest-python|mcp-direct|mcp-governed) printf '%s\n' "$1" ;;
     *) return 1 ;;
   esac
 }
 
 gateway_of_target() {
   case "$1" in
-    direct) printf '%s\n' "none" ;;
-    kong-passthrough|kong-governed) printf '%s\n' "kong" ;;
+    direct|rest-python|mcp-direct) printf '%s\n' "none" ;;
+    kong-passthrough|kong-governed|mcp-governed) printf '%s\n' "kong" ;;
     apisix-passthrough|apisix-governed) printf '%s\n' "apisix" ;;
     *) return 1 ;;
   esac
 }
 
+protocol_of_target() {
+  case "$1" in
+    mcp-direct|mcp-governed) printf '%s\n' "mcp" ;;
+    *) printf '%s\n' "rest" ;;
+  esac
+}
+
+loadgen_of_target() {
+  case "$1" in
+    mcp-direct|mcp-governed|rest-python) printf '%s\n' "python" ;;
+    *) printf '%s\n' "k6" ;;
+  esac
+}
+
 is_governed_target() {
   case "$1" in
-    kong-governed|apisix-governed) return 0 ;;
+    kong-governed|apisix-governed|mcp-governed) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Python mcp-loadgen service (FastMCP Client and/or httpx rest-python).
+is_python_loadgen_target() {
+  case "$1" in
+    mcp-direct|mcp-governed|rest-python) return 0 ;;
     *) return 1 ;;
   esac
 }
 
 jaeger_service_of_target() {
   case "$1" in
-    kong-governed) printf '%s\n' "kong-bench" ;;
+    kong-governed|mcp-governed) printf '%s\n' "kong-bench" ;;
     apisix-governed) printf '%s\n' "apisix-bench" ;;
     *) printf '%s\n' "" ;;
   esac
@@ -149,7 +174,7 @@ jaeger_service_of_target() {
 if [[ "$SWEEP" -ne 1 ]]; then
   _raw_target="$TARGET"
   if ! TARGET="$(canonicalize_target "$_raw_target")"; then
-    echo "REFUSE: --target must be direct|kong-passthrough|kong-governed|apisix-passthrough|apisix-governed (or aliases passthrough|gateway) (got '$_raw_target')" >&2
+    echo "REFUSE: --target must be direct|kong-passthrough|kong-governed|apisix-passthrough|apisix-governed|rest-python|mcp-direct|mcp-governed (or aliases passthrough|gateway) (got '$_raw_target')" >&2
     exit 2
   fi
   unset _raw_target
@@ -199,7 +224,7 @@ fi
 bad=0
 for c in gatewaydb-mcp-bench-bridge-1 gatewaydb-mcp-bench-kong-1 \
          gatewaydb-mcp-bench-apisix-1 gatewaydb-mcp-bench-keycloak-1 \
-         gatewaydb-mcp-bench-mysql-a-1; do
+         gatewaydb-mcp-bench-mysql-a-1 gatewaydb-mcp-bench-mcp-server-1; do
   require_healthy "$c" || bad=1
 done
 if [[ "$bad" -ne 0 ]]; then
@@ -308,6 +333,7 @@ print(json.dumps({
     "apisix": digest("gatewaydb-mcp-bench-apisix-1"),
     "mysql": digest("gatewaydb-mcp-bench-mysql-a-1"),
     "keycloak": digest("gatewaydb-mcp-bench-keycloak-1"),
+    "mcp_server": digest("gatewaydb-mcp-bench-mcp-server-1"),
 }))
 PY
 )
@@ -567,7 +593,7 @@ def service_names(payload):
             flat.append(n["name"])
     return flat
 
-governed = target in ("kong-governed", "apisix-governed")
+governed = target in ("kong-governed", "apisix-governed", "mcp-governed")
 # After opt-in reset, either gateway may have flushed — both service names mean "not empty".
 empty_svcs = ("kong-bench", "apisix-bench")
 
@@ -676,7 +702,7 @@ def service_names(payload):
             flat.append(n["name"])
     return flat
 
-# Always assert Kong + APISIX routes (both in default stack).
+# Always assert Kong + APISIX REST routes (both in default stack).
 try:
     for label, base in (("kong", "http://localhost:8000"), ("apisix", "http://localhost:9080")):
         code_db = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"{base}/db/tables")
@@ -692,6 +718,36 @@ try:
 except Exception as e:
     fail("routes", str(e))
 
+# MCP server health (latency stack includes mcp-server).
+try:
+    code_h = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:9090/health")
+    if code_h != "200":
+        fail("mcp_server_health", f"http://localhost:9090/health returned {code_h}")
+    else:
+        pass_("mcp_server_health")
+except Exception as e:
+    fail("mcp_server_health", str(e))
+
+# mcp-governed: Kong /mcp must require JWT (401 without token).
+# mcp-direct: skip Kong MCP route check (hits mcp-server:9090 directly).
+if target == "mcp-governed":
+    try:
+        code_mcp = sh(
+            "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+            "-X", "POST", "http://localhost:8000/mcp",
+            "-H", "Content-Type: application/json",
+            "-H", "Accept: application/json, text/event-stream",
+            "-d", '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"preflight","version":"0"}}}',
+        )
+        if code_mcp != "401":
+            fail("routes_kong_mcp_401", f"Kong /mcp without token returned {code_mcp}")
+        else:
+            pass_("routes_kong_mcp_401")
+    except Exception as e:
+        fail("routes_kong_mcp_401", str(e))
+else:
+    skip("routes_kong_mcp_401")
+
 pass_("no_extra_containers")
 
 if os.environ.get("GIT_DIRTY", "false").lower() == "true" and os.environ.get("FORCE", "0") != "1":
@@ -699,11 +755,18 @@ if os.environ.get("GIT_DIRTY", "false").lower() == "true" and os.environ.get("FO
 else:
     pass_("git_clean")
 
-governed = target in ("kong-governed", "apisix-governed")
-jaeger_svc = {"kong-governed": "kong-bench", "apisix-governed": "apisix-bench"}.get(target, "")
+governed = target in ("kong-governed", "apisix-governed", "mcp-governed")
+jaeger_svc = {
+    "kong-governed": "kong-bench",
+    "mcp-governed": "kong-bench",
+    "apisix-governed": "apisix-bench",
+}.get(target, "")
 probe_url = {
     "kong-governed": "http://localhost:8000/db/tables",
     "apisix-governed": "http://localhost:9080/db/tables",
+    # MCP governed: JWT is enforced on /mcp; a bare GET may 404 — use REST /db
+    # for the OTel seed probe (same kong-bench service.name on the plugin).
+    "mcp-governed": "http://localhost:8000/db/tables",
 }.get(target, "")
 
 if not governed:
@@ -803,12 +866,15 @@ run_one() {
     exit 2
   fi
   gateway_meta="$(gateway_of_target "$target")"
+  protocol_meta="$(protocol_of_target "$target")"
+  loadgen_meta="$(loadgen_of_target "$target")"
 
   # Truncate spans before each run (and each repeat).
   : > results/spans.jsonl
   spans_start=$(wc -c < results/spans.jsonl | tr -d ' ')
 
   if is_governed_target "$target"; then
+    # mcp-governed uses Kong plugins → kong-bench traces / kong restart target.
     reset_gw="$gateway_meta"  # kong or apisix
     if [[ "$TELEMETRY_RESET_MODE" == "per_run" ]]; then
       reset_t0=$SECONDS
@@ -857,7 +923,7 @@ run_one() {
   fi
 
   meta=$(
-    export RUN_ID="$run_id" TS="$ts_iso" TARGET="$target" GATEWAY="$gateway_meta" VUS="$vus" ITER="$iterations"
+    export RUN_ID="$run_id" TS="$ts_iso" TARGET="$target" GATEWAY="$gateway_meta" PROTOCOL="$protocol_meta" LOADGEN="$loadgen_meta" VUS="$vus" ITER="$iterations"
     export GIT_COMMIT GIT_DIRTY GIT_BRANCH K6_VERSION NOTE
     export IMAGES_JSON HOST_JSON BRIDGE_CFG_JSON CONTAINERS_RUNNING_JSON
     export PREFLIGHT_JSON="$preflight" REPEAT_INDEX="$repeat_index" REPEAT_GROUP="$repeat_group_id"
@@ -871,6 +937,8 @@ meta = {
   "timestamp_utc": os.environ["TS"],
   "target": os.environ["TARGET"],
   "gateway": os.environ["GATEWAY"],
+  "protocol": os.environ.get("PROTOCOL", "rest"),
+  "loadgen": os.environ.get("LOADGEN", "k6"),
   "vus": int(os.environ["VUS"]),
   "iterations": int(os.environ["ITER"]),
   "git_commit": os.environ["GIT_COMMIT"],
@@ -901,14 +969,33 @@ PY
 
   echo "== run $run_id (repeat $repeat_index/$REPEATS) ==" >&2
   set +e
-  "${COMPOSE[@]}" --profile bench run --rm \
-      -e "TARGET=$target" \
-      -e "VUS=$vus" \
-      -e "ITERATIONS=$iterations" \
-      -e "RUN_ID=$run_id" \
-      -e "RUN_METADATA_JSON=$meta" \
-      k6 run /scripts/latency.js
-  k6_rc=$?
+  if is_python_loadgen_target "$target"; then
+    # Python loadgen: FastMCP Client (mcp-*) or httpx (rest-python).
+    "${COMPOSE[@]}" --profile bench run --rm \
+        -e "TARGET=$target" \
+        -e "VUS=$vus" \
+        -e "ITERATIONS=$iterations" \
+        -e "RUN_ID=$run_id" \
+        -e "RUN_METADATA_JSON=$meta" \
+        -e "MCP_DIRECT_URL=http://mcp-server:8080/mcp" \
+        -e "MCP_GOVERNED_URL=http://kong:8000/mcp" \
+        -e "REST_PYTHON_URL=http://bridge:8080" \
+        -e "DIRECT_URL=http://bridge:8080" \
+        -e "KEYCLOAK_URL=http://keycloak:8080" \
+        mcp-loadgen
+    k6_rc=$?
+  else
+    "${COMPOSE[@]}" --profile bench run --rm \
+        -e "TARGET=$target" \
+        -e "VUS=$vus" \
+        -e "ITERATIONS=$iterations" \
+        -e "RUN_ID=$run_id" \
+        -e "RUN_METADATA_JSON=$meta" \
+        -e "MCP_DIRECT_URL=http://mcp-server:8080/mcp" \
+        -e "MCP_GOVERNED_URL=http://kong:8000/mcp" \
+        k6 run /scripts/latency.js
+    k6_rc=$?
+  fi
   set -e
 
   spans_end=$(wc -c < results/spans.jsonl | tr -d ' ')
@@ -917,7 +1004,7 @@ PY
   fi
 
   if [[ ! -f "$out_path" ]]; then
-    echo "ERROR: k6 finished (rc=$k6_rc) but $out_path was not written" >&2
+    echo "ERROR: loadgen finished (rc=$k6_rc) but $out_path was not written" >&2
     exit 1
   fi
 

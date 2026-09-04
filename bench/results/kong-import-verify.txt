@@ -1,0 +1,14 @@
+# Kong generated-config smoke test
+# Container: kong-generated-smoke on localhost:18000 (throwaway; runtime stays kong/kong.yml)
+# Graft: hand-written JWT consumer + /db plugin chain onto generated list_tables only.
+#
+## Unauthenticated GET /tables (expect 401)
+http_code=401
+## Authenticated GET /tables (expect 200)
+http_code=200
+body_keys= ['count', 'database', 'tables']
+body_prefix= {'tables': ['customers', 'orders', 'products'], 'count': 3, 'database': 'testdb'}
+## Unauthenticated GET /tables/orders/rows?limit=1 (expect 200 — ungrafted)
+http_code=200
+## PASS
+Generated routes reach bridge; grafted JWT chain behaves (401/200).

@@ -9,13 +9,41 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- OpenAPI `servers` block from bridge configuration (`api.serverUrl` /
+  `API_SERVER_URL`, Apigee `proxy.url`/`proxy.basepath`, sidecar `PORT`, or
+  relative `/` when uncertain)
+- Typed `POST /query` requestBody schema (`sql` required string; `params`
+  optional array) with a media-type `example` for MCP clients
+- Bounds on `get_{t}_rows` query parameters (`limit` 1…maxRows, `offset` ≥ 0)
+- OpenAPI 3.0.3 parse/validate regression test (`swagger-parser`, test scope)
+- Bench `rest-python` control arm (httpx) so protocol overhead is
+  `mcp-direct − rest-python`, with load-generator cost reported separately as
+  `rest-python − direct`
+- `run_metadata.loadgen` (`k6` | `python`) alongside `protocol`
+
+### Changed
+
+- Generated OpenAPI shape is additive: new `servers`, richer `/query` schema,
+  and parameter bounds. Nothing removed — consumers of older specs see new
+  fields only
+- Bench MCP path consumes the bridge `/openapi` document unmodified (no
+  harness-side schema enrichment or `servers` injection)
+
 ### Fixed
 
 - `GET /tables` now emits an `x-mcp-tool` annotation named `list_tables`, matching
   Table 2 / the manuscript. Prior releases (including the archived `v1.3.0`
   two-gateway evaluation) generated seven MCP tools and omitted this one; the
   endpoint itself was always present and exercised. Archives are immutable — the
-  corrected eight-tool manifest appears from this change forward.
+  corrected eight-tool manifest appears from this change forward
+
+### Removed (bench)
+
+- Pre-fix MCP latency runs that measured against a harness-enriched OpenAPI
+  document (`20260904T112010Z-mcp-direct-*`, `20260904T112412Z-mcp-governed-*`).
+  Those figures must not be cited; re-measure after this release
 
 ---
 

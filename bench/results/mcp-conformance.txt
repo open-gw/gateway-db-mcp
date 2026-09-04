@@ -1,0 +1,79 @@
+# MCP conformance against http://mcp-server:8080/mcp
+# FastMCP Client streamable HTTP
+
+## tools/list
+{
+  "tools": [
+    "describe_customers_schema",
+    "describe_orders_schema",
+    "describe_products_schema",
+    "get_customers_rows",
+    "get_orders_rows",
+    "get_products_rows",
+    "list_tables",
+    "run_query"
+  ]
+}
+
+## get_orders_rows inputSchema
+{
+  "type": "object",
+  "properties": {
+    "limit": {
+      "maximum": 500.0,
+      "minimum": 1.0,
+      "type": "integer",
+      "description": "Max rows (capped at 500)"
+    },
+    "offset": {
+      "minimum": 0.0,
+      "type": "integer",
+      "description": "Pagination offset"
+    },
+    "orderBy": {
+      "type": "string",
+      "description": "Column to order by"
+    },
+    "dir": {
+      "type": "string",
+      "description": "asc or desc"
+    }
+  },
+  "required": []
+}
+
+## tools/call get_orders_rows
+arguments: {"limit": 3}
+result:
+{
+  "table": "orders",
+  "limit": 3,
+  "offset": 0,
+  "rows": [
+    {
+      "id": "1",
+      "customer_id": "1",
+      "status": "refunded",
+      "total": "1952.50",
+      "placed_at": null
+    },
+    {
+      "id": "2",
+      "customer_id": "34",
+      "status": "completed",
+      "total": "1297.59",
+      "placed_at": null
+    },
+    {
+      "id": "3",
+      "customer_id": "15",
+      "status": "cancelled",
+      "total": "1344.56",
+      "placed_at": null
+    }
+  ],
+  "count": 3
+}
+
+## PASS
+tools/list matched 8 expected names; get_orders_rows succeeded.

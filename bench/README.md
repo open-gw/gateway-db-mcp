@@ -22,7 +22,9 @@ benchmark-publication restriction.
 | `apisix` | `apache/apisix:3.13.0-debian` | Second gateway path, `:9080`. `jwt-auth` + `limit-count` + `opentelemetry` (standalone, no etcd) |
 | `otel-collector` | `otel/opentelemetry-collector-contrib` | Spans to Jaeger and to `results/spans.jsonl` |
 | `jaeger` | `jaegertracing/all-in-one` | Trace UI, `:16686` |
-| `k6` | `grafana/k6` | Load generator, profile-gated |
+| `mcp-server` | built from `mcp-server/` (FastMCP 2.x) | OpenAPI→MCP streamable HTTP, `:9090` → `/mcp` |
+| `k6` | `grafana/k6` | Load generator (REST arms), profile-gated |
+| `mcp-loadgen` | same image as `mcp-server` | Python loadgen (FastMCP Client + httpx rest-python), profile-gated |
 
 Kong's `ai-mcp-proxy` plugin is AI Gateway Enterprise only and is deliberately
 not used. MCP protocol translation is the gateway vendor's commodity feature,
@@ -265,12 +267,123 @@ Not in this stack. `QueryValidator` is a Java class and belongs in a JMH
 benchmark under `src/test/`, not behind HTTP. It replaces the deleted
 "under 1.4 ms at p99" claim with a real measurement.
 
-### E5 — MCP conformance
+### E5 — MCP conformance and protocol overhead
 
-Feed `bridge:8080/openapi` to an OSS OpenAPI-to-MCP server, connect MCP
-Inspector, capture `tools/list` and one successful `tools/call` returning rows.
-Verify the current API of whichever library you pick before wiring it in.
-Reviewer-reproducible, unlike a vendor console screenshot.
+Feed `bridge:8080/openapi` to an OSS OpenAPI-to-MCP server (FastMCP), connect an
+MCP client, capture `tools/list` and one successful `tools/call` returning rows.
+Measure MCP vs REST on the same four operations.
+
+#### FastMCP choice (Apache-2.0)
+
+Pinned **FastMCP 2.14.7** + **httpx 0.28.1** under `bench/mcp-server/`. Licence:
+Apache-2.0 ([PrefectHQ/fastmcp](https://github.com/PrefectHQ/fastmcp)). FastMCP
+2.x keeps `FastMCP.from_openapi(..., client=httpx.AsyncClient(...))`; 4.x moved
+to `httpx2` and was not required here.
+
+**Rejected / not used for this harness:**
+
+| Alternative | Why not |
+|---|---|
+| `mcp-openapi-proxy` / similar thin proxies | Less maintained; weaker typed tool schema from OpenAPI than FastMCP |
+| `awslabs/openapi-mcp-server` | AWS Labs packaging; extra vendor surface for a paper that already avoids cloud accounts |
+| Speakeasy Gram | Requires an account / SaaS path — out of scope for this offline harness |
+
+**Finding — `operationId` vs `x-mcp-tool`:** FastMCP derives MCP tool names from
+OpenAPI `operationId`, **not** from `x-mcp-tool`. The bridge sets both to the
+same eight names (`list_tables`, `run_query`, `get_{t}_rows`,
+`describe_{t}_schema` for customers/orders/products), so names should match.
+Conformance (`./scripts/mcp-conformance.sh`) **stops with a non-zero exit** if
+`tools/list` does not equal that set.
+
+**OpenAPI fidelity (fixed in `src/`):** `GenerateOpenAPI` emits a typed
+`/query` requestBody (`sql` + `params`) and a `servers` URL from bridge config
+(`API_SERVER_URL` / defaults). The mcp-server consumes `/openapi` as emitted —
+no harness-side schema enrichment. **Prior MCP latency runs taken against
+harness-enriched specs are discarded** and must not be cited; re-measure after
+the `src/` fix.
+
+Streamable HTTP: `mcp.run(transport="http", host="0.0.0.0", port=8080)` →
+`http://host:8080/mcp` (published as host `:9090`).
+
+#### Measurement arms
+
+| TARGET | Path | Gateway / protocol / loadgen | Measures |
+|---|---|---|---|
+| `direct` | `:8080` | `gateway=none`, `protocol=rest`, `loadgen=k6` | Bridge alone (k6 REST baseline) |
+| `rest-python` | `:8080` | `gateway=none`, `protocol=rest`, `loadgen=python` | Same four HTTP ops via **httpx.AsyncClient** (control) |
+| `mcp-direct` | `:9090/mcp` → bridge | `gateway=none`, `protocol=mcp`, `loadgen=python` | MCP stack alone |
+| `mcp-governed` | Kong `:8000/mcp` → mcp-server → bridge | `gateway=kong`, `protocol=mcp`, `loadgen=python` | MCP + Kong policy |
+
+**Decomposition (protocol section of the summariser):**
+
+| Quantity | Computed as | Role |
+|---|---|---|
+| Load generator cost | `rest-python − direct` | Tooling artifact (python/httpx vs k6) — not protocol |
+| **Protocol overhead** | `mcp-direct − rest-python` | **Paper figure** (same python loadgen) |
+| MCP policy cost | `mcp-governed − mcp-direct` | Kong jwt + rate + otel on MCP |
+| REST policy cost | `kong-governed − kong-passthrough` | Same plugins on REST |
+
+**Why Kong for mcp-governed (not APISIX):** Kong already carries the
+jwt + rate-limiting + opentelemetry chain used for REST `/db`. Putting MCP on
+the same gateway isolates **protocol** cost (mcp-direct − rest-python) and
+**policy** cost per protocol without inventing a second MCP policy chain on
+APISIX. Cross-gateway tables stay REST-focused.
+
+Load generator: **Python** (`mcp-loadgen` / `loadgen.py`) for
+`rest-python` / `mcp-direct` / `mcp-governed`. MCP arms use the FastMCP Client;
+`rest-python` uses `httpx.AsyncClient` (same HTTP library FastMCP sits on).
+REST gateway arms still use k6 `latency.js`. Metadata fields:
+`run_metadata.protocol` is `rest` or `mcp`; `run_metadata.loadgen` is `k6` or
+`python` (legacy files without `loadgen` are inferred). The summariser refuses
+deltas across different loadgens except the explicit pairs in the table above.
+
+```bash
+./scripts/mcp-conformance.sh
+# → results/mcp-conformance.txt
+
+./scripts/run-benchmark.sh --target direct       --vus 1 --iterations 5000 --no-span-file --force
+./scripts/run-benchmark.sh --target rest-python  --vus 1 --iterations 5000 --no-span-file --force
+./scripts/run-benchmark.sh --target mcp-direct   --vus 1 --iterations 5000 --no-span-file --force
+./scripts/run-benchmark.sh --target mcp-governed --vus 1 --iterations 5000 --no-span-file --force
+./scripts/summarise-runs.py --latest --format markdown   # Protocol overhead table when rest-python + mcp-direct present
+```
+
+#### Part 2 — OpenAPI import scaffolding
+
+```bash
+# Requires bridge :8080 up
+./scripts/generate-kong-from-openapi.sh
+# → kong/kong-generated.yml + results/kong-import.diff (*.diff is gitignored; regenerate anytime)
+
+./scripts/verify-kong-generated.sh
+# → results/kong-import-verify.txt (throwaway Kong :18000; 401/200 after grafting plugins)
+
+./scripts/try-apisix-openapi-import.sh
+# → results/apisix-import.txt (documents ADC availability; does not invent a working OSS import)
+```
+
+**Kong import:** `deck file openapi2kong` (via `kong/deck` Docker image if `deck`
+is not installed). The bridge OpenAPI includes `servers` from config; deck
+conversion uses that upstream. Diff against hand-written `kong/kong.yml` is large by
+design: deck emits one service with regex paths for each OpenAPI operation
+(`~/tables$`, `~/query$`, …) and **no** JWT consumer, **no** `/db` strip prefix,
+**no** `/raw` passthrough, **no** MCP `/mcp` → mcp-server route, and **no**
+plugin chain. The hand-written file remains the runtime config.
+
+Smoke test (`./scripts/verify-kong-generated.sh` → `results/kong-import-verify.txt`):
+a throwaway Kong on `:18000` loads the generated file, grafts the hand-written
+JWT consumer + `/db` plugin chain onto the generated `list_tables` route only,
+and checks 401 without a token / 200 with one (bridge body returned). Ungrafted
+generated routes (e.g. `/tables/orders/rows`) return 200 without auth — confirming
+deck routes reach the bridge and that plugins must still be attached by hand.
+
+**APISIX import:** `adc convert openapi` (Docker `api7/adc`) can produce routes
+from the bridge OpenAPI, but the output is ADC-oriented declarative
+config — this harness runs OSS APISIX **standalone** (file provider, no etcd,
+no ADC controller) and does **not** auto-load that output. See
+`results/apisix-import.txt` (and optional `results/apisix-generated.yaml`).
+Hand-written `apisix/apisix.yaml` stays the source of truth. MCP governed
+measurement uses Kong `/mcp`, not APISIX.
 
 ## Platform coverage this produces
 

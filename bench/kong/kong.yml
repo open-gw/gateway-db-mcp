@@ -60,3 +60,31 @@ services:
           - /raw
         strip_path: true
     # No plugins. Deliberately.
+
+  # MCP governed path: client → Kong /mcp → FastMCP mcp-server:8080/mcp → bridge.
+  # strip_path: false so upstream keeps /mcp (FastMCP streamable HTTP endpoint).
+  # Same jwt + rate-limiting + opentelemetry chain as /db (REST governed).
+  # mcp-direct bypasses Kong (host port 9090); this route is mcp-governed only.
+  # No APISIX MCP route — Kong already has the full policy chain for a clean
+  # REST-vs-MCP policy-cost comparison on one gateway.
+  - name: mcp-server-governed
+    url: http://mcp-server:8080
+    routes:
+      - name: mcp-governed-route
+        paths:
+          - /mcp
+        strip_path: false
+    plugins:
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+      - name: rate-limiting
+        config:
+          minute: 1000000
+          policy: local
+      - name: opentelemetry
+        config:
+          traces_endpoint: http://otel-collector:4318/v1/traces
+          resource_attributes:
+            service.name: kong-bench

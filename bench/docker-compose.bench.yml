@@ -25,6 +25,8 @@ x-bridge-env: &bridge-env
   SECURITY_MAX_ROWS: "500"
   SECURITY_QUERY_TIMEOUT: "30"
   API_TITLE: "Test DB MCP Bridge"
+  # Reachable upstream for deck/ADC import of /openapi (compose service name).
+  API_SERVER_URL: "http://bridge:8080"
 
 x-bridge-build: &bridge-build
   context: ..
@@ -228,6 +230,26 @@ services:
       retries: 30
       start_period: 30s
 
+  # FastMCP OpenAPI→MCP server (Apache-2.0). Consumes bridge /openapi;
+  # serves streamable HTTP at /mcp. mcp-direct hits :9090; mcp-governed
+  # goes Kong :8000/mcp → this service.
+  mcp-server:
+    build: ./mcp-server
+    environment:
+      OPENAPI_URL: http://bridge:8080/openapi
+      BRIDGE_BASE: http://bridge:8080
+      PORT: "8080"
+    ports:
+      - "9090:8080"
+    depends_on:
+      bridge: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
   kong:
     image: kong:3.9
     environment:
@@ -246,6 +268,7 @@ services:
     depends_on:
       bridge: {condition: service_healthy}
       keycloak: {condition: service_healthy}
+      mcp-server: {condition: service_healthy}
     healthcheck:
       test: ["CMD", "kong", "health"]
       interval: 10s
@@ -331,7 +354,33 @@ services:
       KONG_GOVERNED_URL: http://kong:8000/db
       APISIX_PASSTHROUGH_URL: http://apisix:9080/raw
       APISIX_GOVERNED_URL: http://apisix:9080/db
+      MCP_DIRECT_URL: http://mcp-server:8080/mcp
+      MCP_GOVERNED_URL: http://kong:8000/mcp
       KEYCLOAK_URL: http://keycloak:8080
     depends_on:
       - kong
       - apisix
+      - mcp-server
+
+  # Python loadgen (profile bench). Used for mcp-direct / mcp-governed
+  # (FastMCP Client) and rest-python (httpx.AsyncClient to the bridge).
+  mcp-loadgen:
+    build: ./mcp-server
+    profiles: ["bench"]
+    entrypoint: ["python", "loadgen.py"]
+    volumes:
+      - ./results:/results
+    environment:
+      TARGET: ${TARGET:-mcp-direct}
+      VUS: ${VUS:-10}
+      ITERATIONS: ${ITERATIONS:-1000}
+      MCP_DIRECT_URL: http://mcp-server:8080/mcp
+      MCP_GOVERNED_URL: http://kong:8000/mcp
+      REST_PYTHON_URL: http://bridge:8080
+      DIRECT_URL: http://bridge:8080
+      KEYCLOAK_URL: http://keycloak:8080
+    depends_on:
+      bridge: {condition: service_healthy}
+      mcp-server: {condition: service_healthy}
+      kong: {condition: service_healthy}
+      keycloak: {condition: service_healthy}

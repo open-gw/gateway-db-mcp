@@ -15,8 +15,15 @@ Five-target decomposition (when available), per gateway:
   Δ policy = {gw}-governed − {gw}-passthrough   ← paper claim
   Δ total  = {gw}-governed − direct
 
+Protocol overhead (when rest-python + mcp-direct available):
+  Δ loadgen   = rest-python − direct          ← tooling artifact
+  Δ protocol  = mcp-direct − rest-python      ← paper figure
+  MCP policy  = mcp-governed − mcp-direct
+  REST policy = kong-governed − kong-passthrough
+
 Canonical targets: direct, kong-passthrough, kong-governed,
-apisix-passthrough, apisix-governed. Legacy aliases when reading only:
+apisix-passthrough, apisix-governed, rest-python, mcp-direct, mcp-governed.
+Legacy aliases when reading only:
 passthrough → kong-passthrough, gateway → kong-governed.
 
 When repeats share a configuration, every latency and throughput figure is
@@ -55,6 +62,20 @@ ARMS = (
     "apisix-governed",
 )
 
+# MCP protocol arms (reported in a separate Protocol overhead section).
+MCP_ARMS = (
+    "mcp-direct",
+    "mcp-governed",
+)
+
+# Python REST control arm (httpx) — isolates loadgen cost from MCP protocol.
+CONTROL_ARMS = (
+    "rest-python",
+)
+
+# All arms the summariser may place in a cohort / provenance footer.
+ALL_ARMS = ARMS + CONTROL_ARMS + MCP_ARMS
+
 # Legacy aliases when reading archived runs (do NOT rewrite files).
 LEGACY_TARGET_ALIASES = {
     "passthrough": "kong-passthrough",
@@ -67,7 +88,18 @@ ARM_LABEL = {
     "kong-governed": "kong-governed",
     "apisix-passthrough": "apisix-passthrough",
     "apisix-governed": "apisix-governed",
+    "rest-python": "rest-python",
+    "mcp-direct": "mcp-direct",
+    "mcp-governed": "mcp-governed",
 }
+
+# Cross-loadgen pairs that are intentionally comparable (tooling / protocol).
+# Same-loadgen pairs are always allowed. Everything else is refused.
+ALLOWED_CROSS_LOADGEN_PAIRS = frozenset({
+    frozenset({"direct", "rest-python"}),       # load generator cost
+    frozenset({"rest-python", "mcp-direct"}),   # protocol overhead
+    frozenset({"mcp-direct", "mcp-governed"}),  # MCP policy (both python)
+})
 
 # (short_id, display_name, passthrough_arm, governed_arm)
 GATEWAYS = (
@@ -90,6 +122,74 @@ EN_DASH = "\u2013"
 def canonicalize_target(target: str) -> str:
     """Map legacy aliases to canonical names; leave unknowns unchanged."""
     return LEGACY_TARGET_ALIASES.get(target, target)
+
+
+def run_protocol(run: dict) -> str:
+    """rest|mcp — legacy runs without protocol field are treated as rest."""
+    meta = run.get("run_metadata") or {}
+    p = meta.get("protocol")
+    if p in ("rest", "mcp"):
+        return str(p)
+    target = canonicalize_target(str(meta.get("target") or ""))
+    if target in MCP_ARMS:
+        return "mcp"
+    return "rest"
+
+
+def run_loadgen(run: dict) -> str:
+    """k6|python — normalize legacy values; infer when missing.
+
+    Legacy runs without ``loadgen``: treat as ``k6`` when protocol is rest
+    (or missing) and target is not mcp-*; otherwise ``python``. Values like
+    ``python-fastmcp-client`` normalize to ``python``.
+    """
+    meta = run.get("run_metadata") or {}
+    raw = meta.get("loadgen")
+    if isinstance(raw, str) and raw:
+        low = raw.lower()
+        if low in ("k6", "k6-streamable-http"):
+            return "k6"
+        if low.startswith("python"):
+            return "python"
+        return low
+    target = canonicalize_target(str(meta.get("target") or ""))
+    if target in MCP_ARMS or target in CONTROL_ARMS:
+        return "python"
+    proto = meta.get("protocol")
+    if proto == "mcp":
+        return "python"
+    return "k6"
+
+
+def loadgen_delta_allowed(a: str, b: str, arms: dict[str, list[dict]]) -> bool:
+    """True when a latency delta between arms a and b is safe to compute.
+
+    Same loadgen → always ok. Cross-loadgen only for explicitly allowed pairs
+    (direct↔rest-python loadgen cost; rest-python↔mcp-direct protocol; etc.).
+    """
+    if a not in arms or b not in arms:
+        return True  # missing arm → fmt_delta returns —
+    lg_a = run_loadgen(arms[a][0]["data"])
+    lg_b = run_loadgen(arms[b][0]["data"])
+    if lg_a == lg_b:
+        return True
+    pair = frozenset({a, b})
+    return pair in ALLOWED_CROSS_LOADGEN_PAIRS
+
+
+def safe_fmt_delta(
+    a_target: str,
+    b_target: str,
+    a_med: float | None,
+    b_med: float | None,
+    arms: dict[str, list[dict]],
+    *,
+    digits: int = 2,
+) -> str:
+    """fmt_delta with cross-loadgen guard; returns — when refused."""
+    if not loadgen_delta_allowed(a_target, b_target, arms):
+        return "—"
+    return fmt_delta(a_med, b_med, digits=digits)
 
 
 def load_run(path: Path) -> dict | None:
@@ -389,7 +489,7 @@ def warn_repeat_count_mismatch(
     meta0 = next(iter(arms.values()))[0]["meta"]
     vu = meta0["vus"]
     iterations = meta0["iterations"]
-    for t in ARMS:
+    for t in ALL_ARMS:
         if t not in arms:
             continue
         n = len(arms[t])
@@ -437,6 +537,46 @@ def configs_from_rows(
     return selected
 
 
+def commit_of_runs(runs: list[dict]) -> str:
+    return str(runs[0]["meta"].get("git_commit") or "")
+
+
+def same_commit_cohort(
+    arms: dict[str, list[dict]],
+) -> dict[str, list[dict]]:
+    """Keep only arms from the newest git_commit in this (vu, iter) set.
+
+    MCP arms and rest-python are often added in a later harness commit than
+    archived REST sweeps at the same VU/iterations. Mixing them trips
+    check_commits when bench/ code differs. Prefer the newest commit's cohort
+    so --latest can render protocol overhead without --allow-mixed-commit once
+    matching ``rest-python`` + ``mcp-direct`` (and ideally ``direct``) runs
+    exist on that commit.
+    """
+    if not arms:
+        return arms
+    by_commit: dict[str, dict[str, list[dict]]] = {}
+    for t, runs in arms.items():
+        by_commit.setdefault(commit_of_runs(runs), {})[t] = runs
+    if len(by_commit) == 1:
+        return arms
+
+    def cohort_ts(cohort: dict[str, list[dict]]) -> str:
+        return max((group_timestamp(r) for r in cohort.values()), default="")
+
+    best_commit = max(by_commit.keys(), key=lambda c: cohort_ts(by_commit[c]))
+    kept = by_commit[best_commit]
+    dropped = sorted(set(arms) - set(kept))
+    if dropped:
+        print(
+            "NOTE: --latest dropped arms from older git commits at this "
+            f"VU/iterations (kept commit={best_commit[:12]}): "
+            + ", ".join(dropped),
+            file=sys.stderr,
+        )
+    return kept
+
+
 def latest_arm_maps(
     rows: list[dict],
     *,
@@ -455,18 +595,37 @@ def latest_arm_maps(
         best: dict[str, list[dict]] = {}
         best_n = -1
         best_ts = ""
+        best_has_protocol = False
         for it in iter_counts:
-            arms = {
-                t: newest[(t, vu, it)]
-                for t in ARMS
-                if (t, vu, it) in newest
-            }
+            arms = same_commit_cohort(
+                {
+                    t: newest[(t, vu, it)]
+                    for t in ALL_ARMS
+                    if (t, vu, it) in newest
+                }
+            )
             n = len(arms)
             ts = max((group_timestamp(r) for r in arms.values()), default="")
-            if n > best_n or (n == best_n and ts > best_ts):
+            # Prefer cohorts that can decompose protocol overhead
+            # (rest-python + mcp-direct); bonus if direct is present for
+            # loadgen-cost column.
+            has_protocol = "mcp-direct" in arms and "rest-python" in arms
+            has_loadgen_cost = has_protocol and "direct" in arms
+            # Prefer a cohort that can report protocol overhead; then richer
+            # arm sets; then newer timestamps.
+            better = False
+            if has_protocol and not best_has_protocol:
+                better = True
+            elif has_protocol == best_has_protocol:
+                if has_loadgen_cost and "direct" not in best:
+                    better = True
+                elif n > best_n or (n == best_n and ts > best_ts):
+                    better = True
+            if better:
                 best = arms
                 best_n = n
                 best_ts = ts
+                best_has_protocol = has_protocol
         if best:
             warn_repeat_count_mismatch(best, expected_repeats)
             result.append(best)
@@ -622,7 +781,7 @@ def check_commits(arms: dict[str, list[dict]], allow_mixed: bool) -> str:
     if len(commits) <= 1:
         return ""
     detail_lines = []
-    for t in ARMS:
+    for t in ALL_ARMS:
         if t not in arms:
             continue
         for row in arms[t]:
@@ -690,7 +849,7 @@ def repeats_note(
 ) -> list[str]:
     """Announce how many repeats were used, especially when below expected."""
     notes: list[str] = []
-    counts = {t: len(arms[t]) for t in ARMS if t in arms}
+    counts = {t: len(arms[t]) for t in ALL_ARMS if t in arms}
     if not counts:
         return notes
     max_n = max(counts.values())
@@ -730,7 +889,7 @@ def repeats_note(
     if n_suspect:
         suspect_ids = [
             row["meta"]["run_id"]
-            for t in ARMS
+            for t in ALL_ARMS
             if t in arms
             for row in arms[t]
             if is_suspect(row["data"])
@@ -763,6 +922,110 @@ def _emit_table(
         for r in rows_out:
             lines.append("\t".join(r))
         lines.append("")
+
+
+def render_protocol_overhead(
+    arms: dict[str, list[dict]],
+    pct_key: str,
+    pct_label: str,
+    title_prefix: str,
+    fmt_kind: str,
+    spread_warnings: list[str],
+) -> list[str]:
+    """Protocol overhead decomposition with rest-python control arm.
+
+    Load generator cost: rest-python − direct   (tooling artifact; k6 vs python)
+    Protocol overhead:    mcp-direct − rest-python  ← paper figure
+    MCP policy cost:      mcp-governed − mcp-direct
+    REST policy cost:     kong-governed − kong-passthrough
+    """
+    if "mcp-direct" not in arms or "rest-python" not in arms:
+        return []
+
+    vu = sample_meta(arms)["vus"]
+    headers = [
+        "endpoint",
+        "direct",
+        "rest-python",
+        "mcp-direct",
+        "Δ loadgen",
+        "Δ protocol",
+        "REST Δ policy",
+        "MCP Δ policy",
+    ]
+    rows_out: list[list[str]] = []
+    for metric_key, label in ENDPOINTS:
+        d = arm_stats(arms, "direct", metric_key, pct_key)
+        rp = arm_stats(arms, "rest-python", metric_key, pct_key)
+        md = arm_stats(arms, "mcp-direct", metric_key, pct_key)
+        kpt = arm_stats(arms, "kong-passthrough", metric_key, pct_key)
+        kg = arm_stats(arms, "kong-governed", metric_key, pct_key)
+        mg = arm_stats(arms, "mcp-governed", metric_key, pct_key)
+
+        for t, stats in (
+            ("direct", d),
+            ("rest-python", rp),
+            ("mcp-direct", md),
+            ("kong-passthrough", kpt),
+            ("kong-governed", kg),
+            ("mcp-governed", mg),
+        ):
+            if t in arms and spread_wide(stats):
+                spread_warnings.append(
+                    f"WARNING: wide spread VU={vu} {label} {pct_label} "
+                    f"{ARM_LABEL.get(t, t)}: {fmt_range(stats, digits=2)}"
+                )
+
+        rows_out.append([
+            label,
+            fmt_range(d, digits=2, warn=spread_wide(d)),
+            fmt_range(rp, digits=2, warn=spread_wide(rp)),
+            fmt_range(md, digits=2, warn=spread_wide(md)),
+            # tooling artifact: k6 direct vs python httpx rest-python
+            safe_fmt_delta(
+                "direct", "rest-python", med_of(d), med_of(rp), arms
+            ),
+            # paper figure: same python loadgen, MCP vs REST
+            safe_fmt_delta(
+                "rest-python", "mcp-direct", med_of(rp), med_of(md), arms
+            ),
+            safe_fmt_delta(
+                "kong-passthrough", "kong-governed",
+                med_of(kpt), med_of(kg), arms,
+            ),
+            safe_fmt_delta(
+                "mcp-direct", "mcp-governed",
+                med_of(md), med_of(mg), arms,
+            ),
+        ])
+
+    lines: list[str] = []
+    _emit_table(
+        lines,
+        fmt_kind,
+        f"{title_prefix} — Protocol overhead {pct_label} (ms)",
+        headers,
+        rows_out,
+    )
+    if fmt_kind == "markdown":
+        lines.append(
+            "Δ loadgen = rest-python − direct (tooling artifact: python/httpx "
+            "vs k6). "
+            "**Δ protocol = mcp-direct − rest-python** (paper figure; same "
+            "python loadgen). "
+            "REST Δ policy = kong-governed − kong-passthrough. "
+            "MCP Δ policy = mcp-governed − mcp-direct."
+        )
+        lines.append("")
+    else:
+        lines.append(
+            "Δ loadgen = rest-python − direct (tooling artifact); "
+            "Δ protocol = mcp-direct − rest-python (paper figure); "
+            "REST Δ policy = kong-governed − kong-passthrough; "
+            "MCP Δ policy = mcp-governed − mcp-direct"
+        )
+        lines.append("")
+    return lines
 
 
 def render_gateway_latency(
@@ -943,11 +1206,18 @@ def render_group(
             f"NOTE: missing arm(s): {', '.join(missing)}. "
             f"Showing available columns only."
         )
+    control_present = [ARM_LABEL[t] for t in CONTROL_ARMS if t in arms]
+    if control_present:
+        lines.append(f"Control arms present: {', '.join(control_present)}.")
+    mcp_present = [ARM_LABEL[t] for t in MCP_ARMS if t in arms]
+    if mcp_present:
+        lines.append(f"MCP arms present: {', '.join(mcp_present)}.")
 
     active_gateways = [
         gw for gw in GATEWAYS if gateway_present(arms, gw[2], gw[3])
     ]
-    if not active_gateways:
+    has_protocol = "mcp-direct" in arms and "rest-python" in arms
+    if not active_gateways and not has_protocol:
         lines.append(
             "NOTE: no gateway passthrough/governed arms present; "
             "nothing to decompose."
@@ -971,12 +1241,13 @@ def render_group(
                 )
             )
 
-    for pct_key, pct_label in (("med", "p50"), ("p(95)", "p95"), ("p(99)", "p99")):
-        lines.extend(
-            render_cross_gateway_latency(
-                arms, pct_key, pct_label, title, fmt_kind
+    if active_gateways:
+        for pct_key, pct_label in (("med", "p50"), ("p(95)", "p95"), ("p(99)", "p99")):
+            lines.extend(
+                render_cross_gateway_latency(
+                    arms, pct_key, pct_label, title, fmt_kind
+                )
             )
-        )
 
     for _gid, gw_label, pt, gov in active_gateways:
         lines.extend(
@@ -987,6 +1258,20 @@ def render_group(
         if fmt_kind == "markdown":
             lines.append("")
 
+    # Protocol overhead — needs rest-python + mcp-direct.
+    if has_protocol:
+        for pct_key, pct_label in (("med", "p50"), ("p(95)", "p95"), ("p(99)", "p99")):
+            lines.extend(
+                render_protocol_overhead(
+                    arms,
+                    pct_key,
+                    pct_label,
+                    title,
+                    fmt_kind,
+                    spread_warnings,
+                )
+            )
+
     if fmt_kind == "markdown":
         lines.append(
             "Δ proxy = {gw}-passthrough − direct. "
@@ -994,19 +1279,28 @@ def render_group(
             "Δ total = {gw}-governed − direct. "
             "Shared `direct` baseline for both gateways. "
             "Lead with Δ policy; cross-gateway table compares Kong vs APISIX Δ policy. "
+            "Protocol overhead table (when rest-python + mcp-direct present): "
+            "Δ loadgen = rest-python − direct (tooling artifact); "
+            "Δ protocol = mcp-direct − rest-python (paper figure); "
+            "REST vs MCP Δ policy. "
             "Latency/throughput cells are median [min–max] across repeats. "
             "Suspect runs are flagged above; their stored throughput_measured "
-            "is ignored in favour of the derived figure."
+            "is ignored in favour of the derived figure. "
+            "Legacy runs without run_metadata.protocol are treated as rest; "
+            "without loadgen as k6 (or python for mcp-*/rest-python)."
         )
     else:
         lines.append(
             "deltas: proxy=passthrough-direct policy=governed-passthrough "
-            "total=governed-direct (per gateway; shared direct)"
+            "total=governed-direct (per gateway; shared direct); "
+            "loadgen=rest-python-direct (tooling); "
+            "protocol=mcp-direct-rest-python; "
+            "mcp_policy=mcp-governed-mcp-direct"
         )
 
     # Provenance footer — every run_id that contributed.
     id_parts: list[str] = []
-    for t in ARMS:
+    for t in ALL_ARMS:
         if t not in arms:
             continue
         ids = ",".join(
@@ -1024,7 +1318,7 @@ def render_group(
         + ("  († = status=suspect)" if count_suspect(arms) else "")
     )
     notes = []
-    for t in ARMS:
+    for t in ALL_ARMS:
         if t not in arms:
             continue
         for row in arms[t]:
@@ -1148,10 +1442,10 @@ def main() -> None:
                 )
             require_phase_main(row["data"], str(row["path"]))
             t = row["meta"]["target"]
-            if t not in ARMS:
+            if t not in ALL_ARMS:
                 raise SystemExit(
                     f"run {rid} has unknown target {t!r} "
-                    f"(canonical: {', '.join(ARMS)}; "
+                    f"(canonical: {', '.join(ALL_ARMS)}; "
                     f"legacy aliases: passthrough, gateway)"
                 )
             if t in arms:

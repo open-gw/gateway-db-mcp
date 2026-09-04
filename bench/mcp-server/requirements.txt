@@ -1,0 +1,4 @@
+# FastMCP 2.x (Apache-2.0). Prefer 2.x stable over 3.x/4.x: from_openapi still
+# takes httpx.AsyncClient (4.x switched to httpx2). Pin recent 2.x + httpx.
+fastmcp==2.14.7
+httpx==0.28.1

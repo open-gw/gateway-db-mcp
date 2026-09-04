@@ -1,0 +1,66 @@
+services:
+  - description: >-
+      Auto-generated from live DB schema. Import into Apigee X / Kong / Azure
+      APIM MCP proxy configuration. Source:
+      https://github.com/open-gw/gateway-db-mcp
+    name: Test DB MCP Bridge — testdb
+    routes:
+      - description: 'List all accessible tables in database: testdb'
+        methods:
+          - GET
+        name: list_tables
+        uris:
+          - /tables
+      - description: Execute a parameterized SELECT statement
+        methods:
+          - POST
+        name: run_query
+        uris:
+          - /query
+      - description: 'Retrieve rows from table: customers'
+        methods:
+          - GET
+        name: get_customers_rows
+        uris:
+          - /tables/customers/rows
+      - description: 'Describe schema of table: customers'
+        methods:
+          - GET
+        name: describe_customers_schema
+        uris:
+          - /tables/customers/schema
+      - description: 'Retrieve rows from table: orders'
+        methods:
+          - GET
+        name: get_orders_rows
+        uris:
+          - /tables/orders/rows
+      - description: 'Describe schema of table: orders'
+        methods:
+          - GET
+        name: describe_orders_schema
+        uris:
+          - /tables/orders/schema
+      - description: 'Retrieve rows from table: products'
+        methods:
+          - GET
+        name: get_products_rows
+        uris:
+          - /tables/products/rows
+      - description: 'Describe schema of table: products'
+        methods:
+          - GET
+        name: describe_products_schema
+        uris:
+          - /tables/products/schema
+    upstream:
+      nodes:
+        - host: bridge
+          port: 8080
+          weight: 100
+      pass_host: pass
+      scheme: http
+      timeout:
+        connect: 60
+        read: 60
+        send: 60
