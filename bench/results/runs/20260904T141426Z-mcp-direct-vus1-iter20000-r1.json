@@ -1,0 +1,276 @@
+{
+  "root_group": {
+    "name": "",
+    "path": "",
+    "id": "d41d8cd98f00b204e9800998ecf8427e",
+    "groups": [],
+    "checks": []
+  },
+  "options": {},
+  "metrics": {
+    "ep_list_tables{phase:warmup}": {
+      "values": {
+        "avg": 3.9723753270277,
+        "min": 3.0590839742217213,
+        "med": 3.529332985635847,
+        "p(95)": 5.8376710541779175,
+        "p(99)": 9.170716777443888,
+        "max": 106.38004101929255,
+        "count": 1410
+      },
+      "type": "trend"
+    },
+    "ep_list_tables{phase:main}": {
+      "values": {
+        "avg": 3.928394391745678,
+        "min": 2.9759590106550604,
+        "med": 3.5575835063355044,
+        "p(95)": 5.759300290083045,
+        "p(99)": 9.14726038725348,
+        "max": 126.6485000087414,
+        "count": 20000
+      },
+      "type": "trend"
+    },
+    "ep_list_tables": {
+      "values": {
+        "avg": 3.931290847548931,
+        "min": 2.9759590106550604,
+        "med": 3.5557914816308767,
+        "p(95)": 5.766292015323415,
+        "p(99)": 9.151552424009424,
+        "max": 126.6485000087414,
+        "count": 21410
+      },
+      "type": "trend"
+    },
+    "ep_describe_schema{phase:warmup}": {
+      "values": {
+        "avg": 4.640641405473377,
+        "min": 3.8179580005817115,
+        "med": 4.230729507980868,
+        "p(95)": 6.685327609011436,
+        "p(99)": 11.49623952864209,
+        "max": 25.44425000087358,
+        "count": 1410
+      },
+      "type": "trend"
+    },
+    "ep_describe_schema{phase:main}": {
+      "values": {
+        "avg": 4.5768124111025825,
+        "min": 3.7025829951744527,
+        "med": 4.221958501148038,
+        "p(95)": 6.373057689052075,
+        "p(99)": 10.27850333455715,
+        "max": 99.93199998280033,
+        "count": 20000
+      },
+      "type": "trend"
+    },
+    "ep_describe_schema": {
+      "values": {
+        "avg": 4.581016002044331,
+        "min": 3.7025829951744527,
+        "med": 4.222457995638251,
+        "p(95)": 6.407295365352183,
+        "p(99)": 10.386243698885664,
+        "max": 99.93199998280033,
+        "count": 21410
+      },
+      "type": "trend"
+    },
+    "ep_get_rows{phase:warmup}": {
+      "values": {
+        "avg": 4.645976227549638,
+        "min": 3.726958006154746,
+        "med": 4.181270502158441,
+        "p(95)": 6.460103945573791,
+        "p(99)": 11.249864971614539,
+        "max": 55.41400000220165,
+        "count": 1410
+      },
+      "type": "trend"
+    },
+    "ep_get_rows{phase:main}": {
+      "values": {
+        "avg": 4.630041401073686,
+        "min": 3.673041006550193,
+        "med": 4.20887500513345,
+        "p(95)": 6.224625284085049,
+        "p(99)": 10.955010503530394,
+        "max": 107.43800000636838,
+        "count": 20000
+      },
+      "type": "trend"
+    },
+    "ep_get_rows": {
+      "values": {
+        "avg": 4.631090822154073,
+        "min": 3.673041006550193,
+        "med": 4.206917001283728,
+        "p(95)": 6.234731107542757,
+        "p(99)": 11.015985496342172,
+        "max": 107.43800000636838,
+        "count": 21410
+      },
+      "type": "trend"
+    },
+    "ep_run_query{phase:warmup}": {
+      "values": {
+        "avg": 7.893252299693149,
+        "min": 6.146166997496039,
+        "med": 6.801437499234453,
+        "p(95)": 9.844900153984781,
+        "p(99)": 18.8943432288943,
+        "max": 519.522708025761,
+        "count": 1410
+      },
+      "type": "trend"
+    },
+    "ep_run_query{phase:main}": {
+      "values": {
+        "avg": 7.544410055510525,
+        "min": 6.14216600661166,
+        "med": 6.8551044969353825,
+        "p(95)": 9.77035030227853,
+        "p(99)": 18.298484598053502,
+        "max": 232.0851669937838,
+        "count": 20000
+      },
+      "type": "trend"
+    },
+    "ep_run_query": {
+      "values": {
+        "avg": 7.567383785743944,
+        "min": 6.14216600661166,
+        "med": 6.852083504782058,
+        "p(95)": 9.782374862697905,
+        "p(99)": 18.44518700236221,
+        "max": 519.522708025761,
+        "count": 21410
+      },
+      "type": "trend"
+    },
+    "iteration_duration{phase:main}": {
+      "values": {
+        "avg": 20.6996993472334,
+        "min": 16.78704100777395,
+        "med": 18.876187488785945,
+        "p(95)": 28.332456268253736,
+        "p(99)": 49.82087417825818,
+        "max": 246.66341702686623,
+        "count": 20000
+      },
+      "type": "trend"
+    },
+    "main_wall_mark_ms": {
+      "values": {
+        "avg": 1788531506379.7822,
+        "min": 1788531299756.7002,
+        "med": 1788531505527.438,
+        "p(95)": 1788531692984.219,
+        "p(99)": 1788531709617.5652,
+        "max": 1788531713843.8447,
+        "count": 40000
+      },
+      "type": "trend"
+    },
+    "checks{phase:main}": {
+      "values": {
+        "rate": 1.0,
+        "passes": 85640,
+        "fails": 0
+      },
+      "type": "rate"
+    },
+    "http_reqs": {
+      "values": {
+        "count": 85640,
+        "rate": 206.81636976908612
+      },
+      "type": "counter"
+    }
+  },
+  "run_metadata": {
+    "run_id": "20260904T141426Z-mcp-direct-vus1-iter20000-r1",
+    "timestamp_utc": "2026-09-04T14:14:26Z",
+    "target": "mcp-direct",
+    "gateway": "none",
+    "protocol": "mcp",
+    "loadgen": "python",
+    "vus": 1,
+    "iterations": 20000,
+    "git_commit": "e43f35140259206deb6333416bc5c1b411dde917",
+    "git_dirty": false,
+    "git_branch": "main",
+    "k6_version": "0.54.0",
+    "images": {
+      "bridge": "gatewaydb-mcp-bench-bridge@sha256:40ad8a48620f66a5199ef7d070969a2312feb9de16399cc35d1f6e84873c089a",
+      "kong": "kong@sha256:2a8cf3b110cdaba1cb00adc665b8635ed1fc75c907f7a4298613c68e4976de0a",
+      "apisix": "apache/apisix@sha256:c5c7a55ebb5c07abc210dbb963a37f41030e12c91d23bacedbaa168fec633bd7",
+      "mysql": "mysql@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+      "keycloak": "quay.io/keycloak/keycloak@sha256:09a381c715ab0b111835b70f2905955274843a219c6f27efb348e4d9f4086858",
+      "mcp_server": "gatewaydb-mcp-bench-mcp-server@sha256:4aa0b44073e5651555815d9fe0a9074dc3f70801a7c8c86e5833bddf034dddde"
+    },
+    "host": {
+      "os": "Darwin 25.5.0 arm64",
+      "cpu_model": "Apple M3 Pro",
+      "cpu_cores": 12,
+      "memory_gb": 18.0,
+      "docker_vm_cpus": 8,
+      "docker_vm_memory_gb": 7.75
+    },
+    "bridge_config": {
+      "security_read_only": "true",
+      "security_allowed_tables": "orders,products,customers",
+      "security_max_rows": "500",
+      "security_query_timeout": "30",
+      "db_type": "mysql"
+    },
+    "containers_running": [
+      "apisix",
+      "bridge",
+      "jaeger",
+      "keycloak",
+      "kong",
+      "mcp-server",
+      "mysql-a",
+      "otel-collector"
+    ],
+    "preflight": {
+      "jaeger_reset": "skipped",
+      "jaeger_running": "skipped",
+      "jaeger_memory": "skipped",
+      "jaeger_trace_count": "skipped",
+      "routes_kong_db_401": "pass",
+      "routes_kong_raw_200": "pass",
+      "routes_apisix_db_401": "pass",
+      "routes_apisix_raw_200": "pass",
+      "mcp_server_health": "pass",
+      "routes_kong_mcp_401": "skipped",
+      "no_extra_containers": "pass",
+      "git_clean": "pass",
+      "otel_collector_running": "skipped",
+      "otel_collector_logs_clean": "skipped",
+      "traces_arriving": "skipped"
+    },
+    "repeat_index": 1,
+    "repeat_group_id": "20260904T141425Z-mcp-direct-vus1-iter20000",
+    "spans_bytes_start": 0,
+    "no_span_file": true,
+    "notes": "citable sweep v1.4.0: protocol arms",
+    "telemetry_reset": "none",
+    "requests_per_iteration": 4,
+    "main_scenario_duration_s": 413.993986944668,
+    "main_scenario_duration_s_walltrend": 414.08714453125,
+    "throughput_measured": 193.2395216423574,
+    "throughput_wall": 206.81636976908612,
+    "main_duration_method": "iteration_duration{phase:main}.avg_ms \u00d7 iterations / vus / 1000",
+    "iteration_avg_ms": 20.6996993472334,
+    "endpoint_avg_sum_ms": 20.679658259432472,
+    "status": "complete",
+    "spans_bytes_end": 0
+  },
+  "status": "complete"
+}

@@ -1,0 +1,276 @@
+{
+  "root_group": {
+    "name": "",
+    "path": "",
+    "id": "d41d8cd98f00b204e9800998ecf8427e",
+    "groups": [],
+    "checks": []
+  },
+  "options": {},
+  "metrics": {
+    "ep_list_tables{phase:warmup}": {
+      "values": {
+        "avg": 0.9602821723320729,
+        "min": 0.7574580085929483,
+        "med": 0.9141250047832727,
+        "p(95)": 1.2172229136922397,
+        "p(99)": 1.7639632514328771,
+        "max": 20.44150000438094,
+        "count": 5862
+      },
+      "type": "trend"
+    },
+    "ep_list_tables{phase:main}": {
+      "values": {
+        "avg": 0.96704052954301,
+        "min": 0.7587499858345836,
+        "med": 0.907979003386572,
+        "p(95)": 1.2554410684970203,
+        "p(99)": 2.0425255142617864,
+        "max": 22.553999995579943,
+        "count": 20000
+      },
+      "type": "trend"
+    },
+    "ep_list_tables": {
+      "values": {
+        "avg": 0.9655086491791359,
+        "min": 0.7574580085929483,
+        "med": 0.909416499780491,
+        "p(95)": 1.2469874796806828,
+        "p(99)": 1.9947393788606853,
+        "max": 22.553999995579943,
+        "count": 25862
+      },
+      "type": "trend"
+    },
+    "ep_describe_schema{phase:warmup}": {
+      "values": {
+        "avg": 1.6957453288519133,
+        "min": 1.4287079975474626,
+        "med": 1.627833495149389,
+        "p(95)": 2.0558329997584224,
+        "p(99)": 2.822142770746735,
+        "max": 11.419582995586097,
+        "count": 5862
+      },
+      "type": "trend"
+    },
+    "ep_describe_schema{phase:main}": {
+      "values": {
+        "avg": 1.713017256387684,
+        "min": 1.45104099647142,
+        "med": 1.6176249919226393,
+        "p(95)": 2.112631885393056,
+        "p(99)": 3.2555693396716334,
+        "max": 40.330917021492496,
+        "count": 20000
+      },
+      "type": "trend"
+    },
+    "ep_describe_schema": {
+      "values": {
+        "avg": 1.7091023217648904,
+        "min": 1.4287079975474626,
+        "med": 1.6200420068344101,
+        "p(95)": 2.102269047463777,
+        "p(99)": 3.174933365371544,
+        "max": 40.330917021492496,
+        "count": 25862
+      },
+      "type": "trend"
+    },
+    "ep_get_rows{phase:warmup}": {
+      "values": {
+        "avg": 0.8478196360279988,
+        "min": 0.6639169878326356,
+        "med": 0.8052499906625599,
+        "p(95)": 1.0411954863229766,
+        "p(99)": 1.5150932580581875,
+        "max": 4.757374990731478,
+        "count": 5862
+      },
+      "type": "trend"
+    },
+    "ep_get_rows{phase:main}": {
+      "values": {
+        "avg": 0.8671300720234285,
+        "min": 0.6433340022340417,
+        "med": 0.8079584949882701,
+        "p(95)": 1.074424358375836,
+        "p(99)": 1.7477092609624376,
+        "max": 30.980208015535027,
+        "count": 20000
+      },
+      "type": "trend"
+    },
+    "ep_get_rows": {
+      "values": {
+        "avg": 0.8627530796869809,
+        "min": 0.6433340022340417,
+        "med": 0.8073330100160092,
+        "p(95)": 1.0619127919198943,
+        "p(99)": 1.700371517799794,
+        "max": 30.980208015535027,
+        "count": 25862
+      },
+      "type": "trend"
+    },
+    "ep_run_query{phase:warmup}": {
+      "values": {
+        "avg": 1.598374531194056,
+        "min": 1.3391250104177743,
+        "med": 1.4899164962116629,
+        "p(95)": 1.9041107021621426,
+        "p(99)": 3.0812467465875684,
+        "max": 106.54366697417572,
+        "count": 5862
+      },
+      "type": "trend"
+    },
+    "ep_run_query{phase:main}": {
+      "values": {
+        "avg": 1.5938510090811178,
+        "min": 1.30808399990201,
+        "med": 1.4835000038146973,
+        "p(95)": 1.9322309672133993,
+        "p(99)": 3.322821259789623,
+        "max": 129.22137600253336,
+        "count": 20000
+      },
+      "type": "trend"
+    },
+    "ep_run_query": {
+      "values": {
+        "avg": 1.5948763314315177,
+        "min": 1.30808399990201,
+        "med": 1.484916516346857,
+        "p(95)": 1.9228521035984145,
+        "p(99)": 3.2583132313448004,
+        "max": 129.22137600253336,
+        "count": 25862
+      },
+      "type": "trend"
+    },
+    "iteration_duration{phase:main}": {
+      "values": {
+        "avg": 5.154552814664203,
+        "min": 4.353249998530373,
+        "med": 4.829749988857657,
+        "p(95)": 6.5105211557238345,
+        "p(99)": 10.202608905965432,
+        "max": 132.45908298995346,
+        "count": 20000
+      },
+      "type": "trend"
+    },
+    "main_wall_mark_ms": {
+      "values": {
+        "avg": 1788531210067.2292,
+        "min": 1788531157901.362,
+        "med": 1788531209905.5034,
+        "p(95)": 1788531256130.73,
+        "p(99)": 1788531260067.5776,
+        "max": 1788531261042.9888,
+        "count": 40000
+      },
+      "type": "trend"
+    },
+    "checks{phase:main}": {
+      "values": {
+        "rate": 1.0,
+        "passes": 103448,
+        "fails": 0
+      },
+      "type": "rate"
+    },
+    "http_reqs": {
+      "values": {
+        "count": 103448,
+        "rate": 1002.9704136030359
+      },
+      "type": "counter"
+    }
+  },
+  "run_metadata": {
+    "run_id": "20260904T141204Z-rest-python-vus1-iter20000-r3",
+    "timestamp_utc": "2026-09-04T14:12:04Z",
+    "target": "rest-python",
+    "gateway": "none",
+    "protocol": "rest",
+    "loadgen": "python",
+    "vus": 1,
+    "iterations": 20000,
+    "git_commit": "e43f35140259206deb6333416bc5c1b411dde917",
+    "git_dirty": false,
+    "git_branch": "main",
+    "k6_version": "0.54.0",
+    "images": {
+      "bridge": "gatewaydb-mcp-bench-bridge@sha256:40ad8a48620f66a5199ef7d070969a2312feb9de16399cc35d1f6e84873c089a",
+      "kong": "kong@sha256:2a8cf3b110cdaba1cb00adc665b8635ed1fc75c907f7a4298613c68e4976de0a",
+      "apisix": "apache/apisix@sha256:c5c7a55ebb5c07abc210dbb963a37f41030e12c91d23bacedbaa168fec633bd7",
+      "mysql": "mysql@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+      "keycloak": "quay.io/keycloak/keycloak@sha256:09a381c715ab0b111835b70f2905955274843a219c6f27efb348e4d9f4086858",
+      "mcp_server": "gatewaydb-mcp-bench-mcp-server@sha256:4aa0b44073e5651555815d9fe0a9074dc3f70801a7c8c86e5833bddf034dddde"
+    },
+    "host": {
+      "os": "Darwin 25.5.0 arm64",
+      "cpu_model": "Apple M3 Pro",
+      "cpu_cores": 12,
+      "memory_gb": 18.0,
+      "docker_vm_cpus": 8,
+      "docker_vm_memory_gb": 7.75
+    },
+    "bridge_config": {
+      "security_read_only": "true",
+      "security_allowed_tables": "orders,products,customers",
+      "security_max_rows": "500",
+      "security_query_timeout": "30",
+      "db_type": "mysql"
+    },
+    "containers_running": [
+      "apisix",
+      "bridge",
+      "jaeger",
+      "keycloak",
+      "kong",
+      "mcp-server",
+      "mysql-a",
+      "otel-collector"
+    ],
+    "preflight": {
+      "jaeger_reset": "skipped",
+      "jaeger_running": "skipped",
+      "jaeger_memory": "skipped",
+      "jaeger_trace_count": "skipped",
+      "routes_kong_db_401": "pass",
+      "routes_kong_raw_200": "pass",
+      "routes_apisix_db_401": "pass",
+      "routes_apisix_raw_200": "pass",
+      "mcp_server_health": "pass",
+      "routes_kong_mcp_401": "skipped",
+      "no_extra_containers": "pass",
+      "git_clean": "pass",
+      "otel_collector_running": "skipped",
+      "otel_collector_logs_clean": "skipped",
+      "traces_arriving": "skipped"
+    },
+    "repeat_index": 3,
+    "repeat_group_id": "20260904T140713Z-rest-python-vus1-iter20000",
+    "spans_bytes_start": 0,
+    "no_span_file": true,
+    "notes": "citable sweep v1.4.0: protocol arms",
+    "telemetry_reset": "none",
+    "requests_per_iteration": 4,
+    "main_scenario_duration_s": 103.09105629328405,
+    "main_scenario_duration_s_walltrend": 103.14162670898438,
+    "throughput_measured": 776.0130012870152,
+    "throughput_wall": 1002.9704136030359,
+    "main_duration_method": "iteration_duration{phase:main}.avg_ms \u00d7 iterations / vus / 1000",
+    "iteration_avg_ms": 5.154552814664203,
+    "endpoint_avg_sum_ms": 5.14103886703524,
+    "status": "complete",
+    "spans_bytes_end": 0
+  },
+  "status": "complete"
+}
